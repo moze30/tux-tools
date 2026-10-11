@@ -23,6 +23,12 @@ add_executable(TuxTools WIN32
     src/render/dx10_tool.cpp
     src/render/dx11_tool.cpp
     src/render/dx12_tool.cpp
+    src/render/gl_tool.cpp
+    src/render/vk_tool.cpp
+    src/render/vk_cube.vert.inc
+    src/render/vk_cube.frag.inc
+    src/render/vk_cube.mesh.inc
+    src/render/vk_cube.texture.inc
     res/app.rc
     res/resource.h
     res/Application.manifest

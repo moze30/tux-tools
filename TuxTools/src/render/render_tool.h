@@ -22,6 +22,8 @@ enum class Api {
     Dx10,
     Dx11,
     Dx12,
+    OpenGl,
+    Vulkan,
 };
 
 inline const wchar_t* apiName(Api api) {
@@ -30,6 +32,8 @@ inline const wchar_t* apiName(Api api) {
         case Api::Dx10: return L"Direct3D 10";
         case Api::Dx11: return L"Direct3D 11";
         case Api::Dx12: return L"Direct3D 12";
+        case Api::OpenGl: return L"OpenGL";
+        case Api::Vulkan: return L"Vulkan";
         default: return L"None";
     }
 }
@@ -59,5 +63,7 @@ Tool* createDx9();
 Tool* createDx10();
 Tool* createDx11();
 Tool* createDx12();
+Tool* createOpenGl();
+Tool* createVulkan();
 
 }  // namespace render

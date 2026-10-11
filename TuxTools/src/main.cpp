@@ -54,7 +54,7 @@ enum class Api { OpenGL = 0, Vulkan = 1 };
 enum class ToolKind { DriverCaps = 0, DriverTest = 1 };
 
 // Entries of the "driver test" tool, in sidebar order.
-enum class DxApi { Dx9 = 0, Dx10 = 1, Dx11 = 2, Dx12 = 3 };
+enum class DxApi { Dx9 = 0, Dx10 = 1, Dx11 = 2, Dx12 = 3, OpenGl = 4, Vulkan = 5 };
 
 const wchar_t* dxApiLabel(DxApi api) {
     switch (api) {
@@ -62,6 +62,8 @@ const wchar_t* dxApiLabel(DxApi api) {
         case DxApi::Dx10: return L"Direct3D 10";
         case DxApi::Dx11: return L"Direct3D 11";
         case DxApi::Dx12: return L"Direct3D 12";
+        case DxApi::OpenGl: return L"OpenGL";
+        case DxApi::Vulkan: return L"Vulkan";
     }
     return L"";
 }
@@ -301,6 +303,8 @@ void ensureRenderer(HWND hwnd) {
         case DxApi::Dx10: tool = render::createDx10(); break;
         case DxApi::Dx11: tool = render::createDx11(); break;
         case DxApi::Dx12: tool = render::createDx12(); break;
+        case DxApi::OpenGl: tool = render::createOpenGl(); break;
+        case DxApi::Vulkan: tool = render::createVulkan(); break;
     }
     if (!tool) return;
 
@@ -317,9 +321,21 @@ void ensureRenderer(HWND hwnd) {
     s->rendererReady = true;
     s->renderDeviceInfo = tool->deviceInfo();
 
-    // Direct3D 12 is the one backend that presents through a flip model swap
-    // chain, so from here on this host window cannot be reused by the others.
-    if (s->dxApi == DxApi::Dx12) s->renderHostStale = true;
+    // Three of the backends leave the host window in a state the next one
+    // cannot use, so each records that here and the shell hands out a fresh
+    // window next time:
+    //
+    //   Direct3D 12  presents through a flip model swap chain, which the
+    //                compositor keeps showing after the chain is released.
+    //   Vulkan       reaches the window through a Win32 surface, and the
+    //                loader implements that with the same flip model path.
+    //   OpenGL       can only ever have SetPixelFormat called on it once, so
+    //                a window OpenGL has been initialised on cannot be reused
+    //                by a second OpenGL context.
+    if (s->dxApi == DxApi::Dx12 || s->dxApi == DxApi::Vulkan ||
+        s->dxApi == DxApi::OpenGl) {
+        s->renderHostStale = true;
+    }
 
     QueryPerformanceFrequency(&s->perfFrequency);
     LARGE_INTEGER now;
@@ -384,7 +400,9 @@ void populateSections(HWND hwnd) {
         titles.push_back(L"Direct3D 10");
         titles.push_back(L"Direct3D 11");
         titles.push_back(L"Direct3D 12");
-        counts.assign(4, -1);
+        titles.push_back(L"OpenGL");
+        titles.push_back(L"Vulkan");
+        counts.assign(6, -1);
     }
     ui::sectionListSetItems(s->sectionList, titles, counts);
     ui::sectionListSetSelection(s->sectionList, 0);
@@ -405,6 +423,8 @@ void updateValueList(HWND hwnd) {
         case 1: s->dxApi = DxApi::Dx10; break;
         case 2: s->dxApi = DxApi::Dx11; break;
         case 3: s->dxApi = DxApi::Dx12; break;
+        case 4: s->dxApi = DxApi::OpenGl; break;
+        case 5: s->dxApi = DxApi::Vulkan; break;
         default: s->dxApi = DxApi::Dx9; break;
     }
             stopRender(hwnd);
