@@ -19,6 +19,8 @@ add_executable(TuxTools WIN32
     src/gl_collector.cpp
     src/vulkan_collector.cpp
     src/ui_controls.cpp
+    src/app_log.h
+    src/app_log.cpp
     src/theme.h
     src/dpi.h
     src/render/render_tool.h
@@ -87,6 +89,9 @@ target_compile_definitions(TuxTools PRIVATE
 # msimg32 provides AlphaBlend, used to dim the client area behind the about
 # overlay. It is a Windows component.
 target_link_libraries(TuxTools PRIVATE
+    # version.dll, for reading kernel32's version resource: it is how the log
+    # reports which Windows - or which Wine build - it is running on.
+    version
     msimg32
     comctl32
     gdi32

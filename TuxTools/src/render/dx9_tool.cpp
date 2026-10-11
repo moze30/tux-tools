@@ -16,6 +16,7 @@
  */
 
 #include "render_tool.h"
+#include "../app_log.h"
 #include "test_content.h"
 
 #include <d3d9.h>
@@ -48,6 +49,9 @@ public:
     void render(double elapsed) override;
     void shutdown() override;
     std::wstring deviceInfo() const override { return deviceInfo_; }
+    std::wstring failureReason() const override {
+        return failureReason_.empty() ? std::wstring(L"未知原因") : failureReason_;
+    }
 
 private:
     struct GpuMesh {
@@ -71,6 +75,8 @@ private:
     int width_ = 1;
     int height_ = 1;
     std::wstring deviceInfo_;
+    // Set at the exact point of failure, so the log names the step that gave up.
+    std::wstring failureReason_;
 
     IDirect3D9* d3d9_ = nullptr;
     IDirect3DDevice9* device_ = nullptr;
@@ -95,7 +101,11 @@ bool Dx9Tool::createDevice(HWND host) {
     host_ = host;
 
     d3d9_ = Direct3DCreate9(D3D_SDK_VERSION);
-    if (!d3d9_) return false;
+    if (!d3d9_) {
+        // Direct3DCreate9 returns nothing at all on failure - no object, no code.
+        applog::write(L"Direct3D 9：Direct3DCreate9 返回空（d3d9.dll 存在但无法提供 IDirect3D9）");
+        return false;
+    }
 
     D3DPRESENT_PARAMETERS pp = {};
     pp.Windowed = TRUE;
@@ -126,7 +136,14 @@ bool Dx9Tool::createDevice(HWND host) {
         used = behaviourName[i];
         if (SUCCEEDED(hr)) break;
     }
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        // All three vertex processing modes were tried; report the last code,
+        // which is the one from software processing and therefore the most
+        // meaningful when even that could not find a usable adapter.
+        applog::writeHresult(L"Direct3D 9：CreateDevice（硬件/混合/软件三种顶点处理均失败）", hr);
+        return false;
+    }
+    applog::write(L"Direct3D 9：CreateDevice 成功（%ls）", used);
 
     D3DADAPTER_IDENTIFIER9 id = {};
     if (SUCCEEDED(d3d9_->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &id))) {
@@ -263,9 +280,16 @@ void Dx9Tool::setupLighting() {
 }
 
 bool Dx9Tool::init(HWND host) {
-    if (!createDevice(host)) return false;
-    if (!createGeometry() || !createTextures()) return false;
+    applog::write(L"Direct3D 9：开始初始化");
+    if (!createDevice(host)) {
+        failureReason_ = L"无法创建 D3D9 设备";
+        return false;
+    }
+    applog::write(L"Direct3D 9：设备已建立，%ls", deviceInfo_.c_str());
+    if (!createGeometry()) { failureReason_ = L"无法创建几何缓冲"; return false; }
+    if (!createTextures()) { failureReason_ = L"无法创建纹理"; return false; }
     setupLighting();
+    applog::write(L"Direct3D 9：初始化完成");
     return true;
 }
 

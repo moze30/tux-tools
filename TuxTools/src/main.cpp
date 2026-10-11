@@ -24,6 +24,7 @@
 #include "ui_controls.h"
 #include "render/render_tool.h"
 #include "decode/decode_test.h"
+#include "app_log.h"
 #include "resource.h"
 
 #include <cstdint>
@@ -160,6 +161,13 @@ struct AppState {
     // window: everything else here is drawn by hand, and an overlay keeps it
     // that way without a dialog resource or a nested message loop.
     bool aboutVisible = false;
+    // The settings card, same construction as the about box.
+    bool settingsVisible = false;
+    RECT settingsLogRect = {};      // the debug toggle row
+    bool settingsLogHot = false;
+    bool settingsLogPressed = false;
+    RECT settingsPathRect = {};     // click to open the folder
+    bool settingsPathHot = false;
     bool aboutCloseHot = false;
     bool aboutLinkHot = false;
     RECT aboutCloseRect = {};
@@ -272,6 +280,8 @@ void stopRender(HWND hwnd);
 void showToolMenu(HWND hwnd);
 void selectTool(HWND hwnd, ToolKind tool);
 void setAboutVisible(HWND hwnd, bool visible);
+void setSettingsVisible(HWND hwnd, bool visible);
+void setOverlayVisible(HWND hwnd, bool visible);
 
 
 // --- Driver test tool -------------------------------------------------------
@@ -392,6 +402,10 @@ void ensureRenderer(HWND hwnd) {
 
 // Starts the driver test: creates the renderer (if needed) and runs the loop.
 void startRender(HWND hwnd) {
+    {
+        AppState* s0 = state(hwnd);
+        if (s0) applog::write(L"驱动测试：开始 %ls", dxApiLabel(s0->dxApi));
+    }
     AppState* s = state(hwnd);
     if (!s) return;
     ensureRenderer(hwnd);
@@ -421,6 +435,9 @@ void startRender(HWND hwnd) {
 void stopRender(HWND hwnd) {
     AppState* s = state(hwnd);
     if (!s) return;
+    // Only worth a line when something was actually running; a stop with nothing
+    // to stop happens on every tool switch and would be noise.
+    if (s->renderer || s->renderRunning) applog::write(L"驱动测试：停止");
     s->renderRunning = false;
     s->currentFps = 0.0;
     s->framesInWindow = 0;
@@ -562,7 +579,8 @@ void showToolMenu(HWND hwnd) {
     AppendMenuW(menu, testFlags, 2, L"驱动测试");
     AppendMenuW(menu, decodeFlags, 3, L"解码测试");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 4, L"关于 Tux-Tools...");
+    AppendMenuW(menu, MF_STRING, 4, L"设置...");
+    AppendMenuW(menu, MF_STRING, 5, L"关于 Tux-Tools...");
 
     RECT r = s->toolButtonRect;
     POINT pt = {r.left, r.bottom};
@@ -575,6 +593,8 @@ void showToolMenu(HWND hwnd) {
     else if (cmd == 2) selectTool(hwnd, ToolKind::DriverTest);
     else if (cmd == 3) selectTool(hwnd, ToolKind::DecodeTest);
     else if (cmd == 4) {
+        setSettingsVisible(hwnd, true);
+    } else if (cmd == 5) {
         setAboutVisible(hwnd, true);
     }
 }
@@ -583,6 +603,11 @@ void selectTool(HWND hwnd, ToolKind tool) {
     AppState* s = state(hwnd);
     if (!s || s->tool == tool) return;
     s->tool = tool;
+    switch (tool) {
+        case ToolKind::DriverCaps: applog::write(L"切换到：驱动能力查看器"); break;
+        case ToolKind::DriverTest: applog::write(L"切换到：驱动测试"); break;
+        case ToolKind::DecodeTest: applog::write(L"切换到：解码测试"); break;
+    }
     ui::searchBoxSetText(s->search, L"");
 
     if (tool == ToolKind::DriverTest) {
@@ -1057,12 +1082,15 @@ void dimClient(HDC dc, const RECT& client) {
 // of it. They have to go away while it is up, or the card ends up underneath
 // them. Only the ones this shell owns are touched; the decode test and the
 // render host manage their own visibility.
-void setAboutVisible(HWND hwnd, bool visible) {
+// Both modal cards are drawn into the parent window, so the same child-window
+// hiding serves them; `visible` says whether either one is now up.
+void setOverlayVisible(HWND hwnd, bool visible) {
     AppState* s = state(hwnd);
     if (!s) return;
-    s->aboutVisible = visible;
     s->aboutCloseHot = false;
     s->aboutLinkHot = false;
+    s->settingsLogHot = false;
+    s->settingsPathHot = false;
 
     const int show = visible ? SW_HIDE : SW_SHOW;
     if (s->sectionList) ShowWindow(s->sectionList, show);
@@ -1088,6 +1116,20 @@ void setAboutVisible(HWND hwnd, bool visible) {
     }
     if (!visible && s->decoder) s->decoder->show(s->tool == ToolKind::DecodeTest);
     InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+void setAboutVisible(HWND hwnd, bool visible) {
+    AppState* s = state(hwnd);
+    if (!s) return;
+    s->aboutVisible = visible;
+    setOverlayVisible(hwnd, visible || s->settingsVisible);
+}
+
+void setSettingsVisible(HWND hwnd, bool visible) {
+    AppState* s = state(hwnd);
+    if (!s) return;
+    s->settingsVisible = visible;
+    setOverlayVisible(hwnd, visible || s->aboutVisible);
 }
 
 void openRepository() {
@@ -1220,6 +1262,108 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
         RECT dr = {nr.right + dpi::scale(8), y, card.right - pad, y + dpi::scale(18)};
         drawText(dc, kCredits[i].note, dr, theme::kPageSubtitle, s->font);
         y += dpi::scale(22);
+    }
+}
+
+// The settings card. Same frame as the about box; the body is a list of rows,
+// each one a label, a control and a hint.
+void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
+    AppState* s = state(hwnd);
+    if (!s || !s->settingsVisible) return;
+
+    dimClient(dc, client);
+
+    const int cardW = dpi::scale(560);
+    const int cardH = dpi::scale(300);
+    RECT card = {(client.right - cardW) / 2, (client.bottom - cardH) / 2,
+                 (client.right - cardW) / 2 + cardW,
+                 (client.bottom - cardH) / 2 + cardH};
+    if (card.top < 0) {
+        card.top = dpi::scale(8);
+        card.bottom = card.top + cardH;
+    }
+
+    RECT shadow = card;
+    OffsetRect(&shadow, dpi::scale(3), dpi::scale(3));
+    fillRoundRect(dc, shadow, theme::kRadiusCard, RGB(0xC8, 0xCC, 0xD2));
+    fillRoundRect(dc, card, theme::kRadiusCard, RGB(0xFF, 0xFF, 0xFF));
+
+    const int pad = dpi::scale(24);
+    int y = card.top + pad;
+
+    RECT titleRc = {card.left + pad, y, card.right - pad - dpi::scale(36),
+                    y + dpi::scale(28)};
+    drawText(dc, L"设置", titleRc, theme::kPageTitle, s->titleFont);
+    y += dpi::scale(38);
+
+    RECT line = {card.left + pad, y, card.right - pad, y + 1};
+    fillRect(dc, line, theme::kDivider);
+    y += dpi::scale(18);
+
+    // --- the debug log row -------------------------------------------------
+    RECT labelRc = {card.left + pad, y, card.left + pad + dpi::scale(120),
+                    y + dpi::scale(24)};
+    drawText(dc, L"调试日志", labelRc, theme::kTableText, s->boldFont);
+
+    // A switch, drawn the way the rest of the shell draws its controls.
+    const int swW = dpi::scale(44);
+    const int swH = dpi::scale(24);
+    s->settingsLogRect = {card.right - pad - swW, y, card.right - pad, y + swH};
+    {
+        const bool on = applog::enabled();
+        COLORREF track = on ? theme::kAccent
+                            : (s->settingsLogHot ? RGB(0xD8, 0xD8, 0xD8)
+                                                 : RGB(0xE0, 0xE0, 0xE0));
+        fillRoundRect(dc, s->settingsLogRect, swH / 2, track);
+        const int knob = swH - dpi::scale(6);
+        const int knobX = on ? s->settingsLogRect.right - dpi::scale(3) - knob
+                             : s->settingsLogRect.left + dpi::scale(3);
+        RECT k = {knobX, s->settingsLogRect.top + dpi::scale(3), knobX + knob,
+                  s->settingsLogRect.top + dpi::scale(3) + knob};
+        fillRoundRect(dc, k, knob / 2, RGB(0xFF, 0xFF, 0xFF));
+    }
+    y += dpi::scale(30);
+
+    // Hint, and the log path so the user knows where to look. The path line is
+    // itself clickable and opens the folder.
+    {
+        RECT hint = {card.left + pad, y, card.right - pad, y + dpi::scale(20)};
+        drawText(dc,
+                 applog::enabled()
+                     ? L"已启用。程序会把运行情况写入下面的文件，便于排查问题。"
+                     : L"启用后会在程序所在目录持续写入日志，便于排查问题。",
+                 hint, theme::kPageSubtitle, s->font);
+        y += dpi::scale(26);
+    }
+
+    RECT pathRc = {card.left + pad, y, card.right - pad, y + dpi::scale(22)};
+    s->settingsPathRect = pathRc;
+    {
+        const std::wstring shown = applog::path();
+        drawText(dc, shown, pathRc,
+                 s->settingsPathHot ? theme::kAccentBorder : theme::kPageSubtitle,
+                 s->font, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+    }
+
+    // Close button, where the about box puts its own.
+    const int closeSz = dpi::scale(28);
+    s->aboutCloseRect = {card.right - pad - closeSz, card.top + pad,
+                         card.right - pad, card.top + pad + closeSz};
+    if (s->aboutCloseHot) {
+        fillRoundRect(dc, s->aboutCloseRect, theme::kRadiusControl, theme::kNavHover);
+    }
+    {
+        const int cx = (s->aboutCloseRect.left + s->aboutCloseRect.right) / 2;
+        const int cy = (s->aboutCloseRect.top + s->aboutCloseRect.bottom) / 2;
+        const int half = dpi::scale(5);
+        HPEN pen = CreatePen(PS_SOLID, dpi::scale(1), theme::kSidebarMuted);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        MoveToEx(dc, cx - half, cy - half, nullptr);
+        LineTo(dc, cx + half + 1, cy + half + 1);
+        MoveToEx(dc, cx + half, cy - half, nullptr);
+        LineTo(dc, cx - half - 1, cy + half + 1);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
     }
 }
 
@@ -1456,12 +1600,20 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             bool changed = false;
 
-            if (s->aboutVisible) {
+            if (s->aboutVisible || s->settingsVisible) {
                 const bool closeHot = PtInRect(&s->aboutCloseRect, pt) != 0;
-                const bool linkHot = PtInRect(&s->aboutLinkRect, pt) != 0;
-                if (closeHot != s->aboutCloseHot || linkHot != s->aboutLinkHot) {
+                const bool linkHot = s->aboutVisible &&
+                                     PtInRect(&s->aboutLinkRect, pt) != 0;
+                const bool logHot = s->settingsVisible &&
+                                    PtInRect(&s->settingsLogRect, pt) != 0;
+                const bool pathHot = s->settingsVisible &&
+                                     PtInRect(&s->settingsPathRect, pt) != 0;
+                if (closeHot != s->aboutCloseHot || linkHot != s->aboutLinkHot ||
+                    logHot != s->settingsLogHot || pathHot != s->settingsPathHot) {
                     s->aboutCloseHot = closeHot;
                     s->aboutLinkHot = linkHot;
+                    s->settingsLogHot = logHot;
+                    s->settingsPathHot = pathHot;
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
                 return 0;
@@ -1517,9 +1669,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         case WM_MOUSELEAVE:
             if (s && (s->apiHot != -1 || s->captionHot != kCaptionNone || s->toolHot ||
-                      s->runButtonHot || s->aboutCloseHot || s->aboutLinkHot)) {
+                      s->runButtonHot || s->aboutCloseHot || s->aboutLinkHot ||
+                      s->settingsLogHot || s->settingsPathHot)) {
                 s->aboutCloseHot = false;
                 s->aboutLinkHot = false;
+                s->settingsLogHot = false;
+                s->settingsPathHot = false;
                 s->apiHot = -1;
                 s->captionHot = kCaptionNone;
                 s->toolHot = false;
@@ -1539,8 +1694,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 setAboutVisible(hwnd, true);
                 return 0;
             }
-            if (wParam == VK_ESCAPE && s->aboutVisible) {
+            if (wParam == VK_ESCAPE && (s->aboutVisible || s->settingsVisible)) {
                 setAboutVisible(hwnd, false);
+                setSettingsVisible(hwnd, false);
                 return 0;
             }
             break;
@@ -1550,10 +1706,24 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             // The about overlay is modal: while it is up it swallows every
             // press, so nothing behind it can be operated by accident.
-            if (s->aboutVisible) {
-                if (PtInRect(&s->aboutLinkRect, pt)) openRepository();
-                else if (!PtInRect(&s->aboutCloseRect, pt)) {
+            if (s->aboutVisible || s->settingsVisible) {
+                if (s->settingsVisible && PtInRect(&s->settingsLogRect, pt)) {
+                    s->settingsLogPressed = true;
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                } else if (s->settingsVisible && PtInRect(&s->settingsPathRect, pt)) {
+                    // Opening the folder is the useful next step after turning
+                    // logging on, so the path line does that.
+                    std::wstring dir = applog::path();
+                    const size_t slash = dir.find_last_of(L"\\/");
+                    if (slash != std::wstring::npos) dir.erase(slash);
+                    ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr,
+                                  SW_SHOWNORMAL);
+                } else if (s->aboutVisible && PtInRect(&s->aboutLinkRect, pt)) {
+                    openRepository();
+                } else if (!PtInRect(&s->aboutCloseRect, pt)) {
                     setAboutVisible(hwnd, false);
+                    setSettingsVisible(hwnd, false);
                 }
                 return 0;
             }
@@ -1602,10 +1772,22 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         case WM_LBUTTONUP: {
             if (!s) return 0;
-            if (s->aboutVisible) {
+            if (s->aboutVisible || s->settingsVisible) {
                 POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                if (s->settingsLogPressed) {
+                    s->settingsLogPressed = false;
+                    ReleaseCapture();
+                    if (PtInRect(&s->settingsLogRect, pt)) {
+                        applog::setEnabled(!applog::enabled());
+                        applog::write(L"设置：调试日志 %ls",
+                                      applog::enabled() ? L"开" : L"关");
+                    }
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
                 if (PtInRect(&s->aboutCloseRect, pt)) {
                     setAboutVisible(hwnd, false);
+                    setSettingsVisible(hwnd, false);
                 }
                 return 0;
             }
@@ -1701,6 +1883,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             paintTopBar(hwnd, memDc, rc);
             paintStatusBar(hwnd, memDc);
             paintAbout(hwnd, memDc, rc);
+            paintSettings(hwnd, memDc, rc);
 
             BitBlt(dc, 0, 0, rc.right, rc.bottom, memDc, 0, 0, SRCCOPY);
             SelectObject(memDc, oldBitmap);
@@ -1739,6 +1922,78 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     // any file at all. STA is what DirectShow expects; the Media Foundation
     // source reader is happy either way.
     const HRESULT comInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    // The log is opened before anything else so that a failure during startup is
+    // itself recorded. Nothing is written when the option is off.
+    applog::init();
+    applog::write(L"===== Tux-Tools 启动 =====");
+    // One block of machine facts up front. On a machine that needs diagnosing
+    // this saves running several separate commands there.
+    applog::writeEnvironmentSnapshot();
+    // Installed once logging is on, so a crash is recorded rather than just ending
+    // the file.
+    applog::installCrashHandler();
+    applog::write(L"命令行：%ls", GetCommandLineW());
+    applog::write(L"COM 初始化：0x%08lx", static_cast<unsigned long>(comInit));
+    {
+        OSVERSIONINFOW os = {};
+        os.dwOSVersionInfoSize = sizeof(os);
+        // GetVersionEx lies without a manifest opt-in, so read the build number
+        // from the file version of kernel32 instead - it is what tells Wine apart
+        // from Windows and one Wine build from another.
+        std::wstring build = L"未知";
+        wchar_t sys[MAX_PATH] = {0};
+        if (GetSystemDirectoryW(sys, MAX_PATH)) {
+            const std::wstring k32 = std::wstring(sys) + L"\\kernel32.dll";
+            DWORD dummy = 0;
+            const DWORD size = GetFileVersionInfoSizeW(k32.c_str(), &dummy);
+            if (size > 0) {
+                std::vector<BYTE> data(size);
+                if (GetFileVersionInfoW(k32.c_str(), 0, size, data.data())) {
+                    VS_FIXEDFILEINFO* info = nullptr;
+                    UINT len = 0;
+                    if (VerQueryValueW(data.data(), L"\\",
+                                       reinterpret_cast<void**>(&info), &len) &&
+                        info) {
+                        wchar_t buf[64];
+                        std::swprintf(buf, 64, L"%u.%u.%u.%u",
+                                      HIWORD(info->dwFileVersionMS),
+                                      LOWORD(info->dwFileVersionMS),
+                                      HIWORD(info->dwFileVersionLS),
+                                      LOWORD(info->dwFileVersionLS));
+                        build = buf;
+                    }
+                }
+            }
+        }
+        // kernel32's file version reads like "6.2.26100.x" on Windows 11
+        // because the first two fields are frozen for compatibility. RtlGetVersion
+        // gives the real build, and the two together identify the system well
+        // enough to tell Windows from Wine and one Wine build from another.
+        std::wstring real = L"未知";
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (ntdll) {
+            typedef LONG(WINAPI * RtlGetVersionFn)(PRTL_OSVERSIONINFOW);
+            auto fn = reinterpret_cast<RtlGetVersionFn>(
+                reinterpret_cast<void*>(GetProcAddress(ntdll, "RtlGetVersion")));
+            RTL_OSVERSIONINFOW vi = {};
+            vi.dwOSVersionInfoSize = sizeof(vi);
+            if (fn && fn(&vi) == 0) {
+                wchar_t buf[96];
+                std::swprintf(buf, 96, L"%u.%u build %u", vi.dwMajorVersion,
+                              vi.dwMinorVersion, vi.dwBuildNumber);
+                real = buf;
+            }
+        }
+        applog::write(L"系统版本：%ls（kernel32 %ls）", real.c_str(), build.c_str());
+        applog::write(L"处理器架构：%ls",
+#if defined(_WIN64)
+                      L"x86_64",
+#else
+                      L"x86",
+#endif
+                      L"");
+    }
     // An optional media path may be given on the command line. It selects the
     // decode test, loads the file and starts the default method, which is what
     // makes the tool scriptable and what the automated checks drive. With no
@@ -1905,6 +2160,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
             DispatchMessageW(&msg);
         }
     }
+    applog::write(L"主循环结束，准备退出");
+    applog::shutdown();
     if (SUCCEEDED(comInit)) CoUninitialize();
     return static_cast<int>(msg.wParam);
 }

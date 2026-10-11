@@ -25,6 +25,7 @@
  */
 
 #include "render_tool.h"
+#include "../app_log.h"
 #include "test_content.h"
 
 #include <d3d10.h>
@@ -223,6 +224,9 @@ public:
     void render(double elapsed) override;
     void shutdown() override;
     std::wstring deviceInfo() const override { return deviceInfo_; }
+    std::wstring failureReason() const override {
+        return failureReason_.empty() ? std::wstring(L"未知原因") : failureReason_;
+    }
 
 
 private:
@@ -252,6 +256,8 @@ private:
     int width_ = 1;
     int height_ = 1;
     std::wstring deviceInfo_;
+    // Set at the exact point of failure, so the log names the step that gave up.
+    std::wstring failureReason_;
     Mat4 lightViewProj_;
 
     ID3D10Device* device_ = nullptr;
@@ -320,7 +326,12 @@ bool Dx10Tool::createDevice(HWND host) {
             nullptr, D3D10_DRIVER_TYPE_WARP, nullptr, 0, D3D10_SDK_VERSION,
             &desc, &swapChain_, &device_);
     }
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        applog::writeHresult(L"Direct3D 10：创建设备与交换链（硬件与 WARP 均失败）", hr);
+        return false;
+    }
+    applog::write(L"Direct3D 10：创建设备成功（%ls）",
+                  used == D3D10_DRIVER_TYPE_WARP ? L"WARP" : L"硬件");
 
     std::wstring adapterName = L"(unknown adapter)";
     IDXGIDevice* dxgiDevice = nullptr;
@@ -362,10 +373,15 @@ bool Dx10Tool::createShaders() {
     }
     if (errors) errors->Release();
 
-    device_->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(),
-                                &vs_);
-    device_->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(),
-                               &ps_);
+    // The return values are checked here: a shader that failed to be created
+    // leaves a null interface, and the only thing that used to catch that was the
+    // final conjunction - which reports nothing about which one it was.
+    HRESULT shaderHr = device_->CreateVertexShader(vsBlob->GetBufferPointer(),
+                                                    vsBlob->GetBufferSize(), &vs_);
+    if (FAILED(shaderHr)) applog::writeHresult(L"Direct3D 10：创建顶点着色器", shaderHr);
+    shaderHr = device_->CreatePixelShader(psBlob->GetBufferPointer(),
+                                          psBlob->GetBufferSize(), &ps_);
+    if (FAILED(shaderHr)) applog::writeHresult(L"Direct3D 10：创建像素着色器", shaderHr);
 
     D3D10_INPUT_ELEMENT_DESC layout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
@@ -416,16 +432,28 @@ bool Dx10Tool::createGeometry() {
     // silhouette it needs; the detail lives in the two generated textures and
     // in the shadows the two bodies throw at each other.
     const float pi = 3.14159265358979f;
-
     const Mesh planet = makeSphere(2.00f, 64, 48);
     const Mesh ring = makeAnnulus(2.45f, 3.95f, 160);
     const Mesh moon = makeSphere(0.34f, 32, 24);
+    const Mesh billboard = makeBillboard(1.0f);
 
     (void)pi;
-    return uploadMesh(planet, frame_) &&
-           uploadMesh(ring, panel_) &&
-           uploadMesh(moon, shuttle_) &&
-           uploadMesh(makeBillboard(1.0f), stars_);
+    // Each body is reported as it is uploaded. On a translation layer a crash
+    // here would otherwise leave the log's last line several calls back, and
+    // with four meshes that is a wide space to search.
+    if (!uploadMesh(planet, frame_)) { applog::write(L"Direct3D 10：上传球体失败"); return false; }
+    applog::write(L"Direct3D 10：  球体 %u 顶点 %u 索引",
+                  static_cast<unsigned>(planet.vertices.size()), planet.indexCount());
+    if (!uploadMesh(ring, panel_)) { applog::write(L"Direct3D 10：上传圆环失败"); return false; }
+    applog::write(L"Direct3D 10：  圆环 %u 顶点 %u 索引",
+                  static_cast<unsigned>(ring.vertices.size()), ring.indexCount());
+    if (!uploadMesh(moon, shuttle_)) { applog::write(L"Direct3D 10：上传卫星失败"); return false; }
+    applog::write(L"Direct3D 10：  卫星 %u 顶点 %u 索引",
+                  static_cast<unsigned>(moon.vertices.size()), moon.indexCount());
+    if (!uploadMesh(billboard, stars_)) { applog::write(L"Direct3D 10：上传公告板失败"); return false; }
+    applog::write(L"Direct3D 10：  公告板 %u 顶点 %u 索引",
+                  static_cast<unsigned>(billboard.vertices.size()), billboard.indexCount());
+    return true;
 }
 
 bool Dx10Tool::createTextures() {
@@ -578,13 +606,27 @@ bool Dx10Tool::createShadowMap() {
 }
 
 bool Dx10Tool::init(HWND host) {
-    if (!createDevice(host)) return false;
-    if (!createShaders() || !createGeometry() || !createTextures() ||
-        !createStates() || !createShadowMap()) {
+    applog::write(L"Direct3D 10：开始初始化");
+    if (!createDevice(host)) {
+        failureReason_ = L"无法创建设备";
         return false;
     }
+    applog::write(L"Direct3D 10：设备已建立，%ls", deviceInfo_.c_str());
+    if (!createShaders()) { failureReason_ = L"无法编译着色器"; return false; }
+    applog::write(L"Direct3D 10：着色器已编译");
+    if (!createGeometry()) { failureReason_ = L"无法创建几何缓冲"; return false; }
+    applog::write(L"Direct3D 10：几何缓冲已创建");
+    if (!createTextures()) { failureReason_ = L"无法创建纹理"; return false; }
+    applog::write(L"Direct3D 10：纹理已创建");
+    if (!createStates()) { failureReason_ = L"无法创建渲染状态"; return false; }
+    applog::write(L"Direct3D 10：渲染状态已创建");
+    if (!createShadowMap()) { failureReason_ = L"无法创建阴影贴图"; return false; }
+    applog::write(L"Direct3D 10：阴影贴图已创建");
     createSizeDependent();
-    return rtv_ != nullptr;
+    applog::write(L"Direct3D 10：尺寸相关资源已创建");
+    if (!rtv_) { failureReason_ = L"渲染目标视图为空"; return false; }
+    applog::write(L"Direct3D 10：初始化完成");
+    return true;
 }
 
 void Dx10Tool::releaseSizeDependent() {

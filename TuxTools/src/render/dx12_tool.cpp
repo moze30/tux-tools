@@ -28,6 +28,7 @@
  */
 
 #include "render_tool.h"
+#include "../app_log.h"
 #include "test_content.h"
 
 #include <d3d12.h>
@@ -47,8 +48,6 @@ const int kFrameCount = 2;
 // boundary, so every draw uses its own aligned block.
 const UINT kConstantStride = 256;
 
-// Everything the pixel shader needs for the frame. Laid out as float4s so the
-// C++ struct and the HLSL cbuffer agree byte for byte.
 struct Constants {
     float eye[4];      // xyz = camera position, w = time in seconds
     float target[4];   // xyz = look-at point, w = aspect ratio
@@ -338,6 +337,9 @@ public:
     void render(double elapsed) override;
     void shutdown() override;
     std::wstring deviceInfo() const override { return deviceInfo_; }
+    std::wstring failureReason() const override {
+        return failureReason_.empty() ? std::wstring(L"未知原因") : failureReason_;
+    }
 
 private:
     bool createDevice(HWND host);
@@ -356,6 +358,8 @@ private:
     int height_ = 1;
     float time_ = 0.0f;
     std::wstring deviceInfo_;
+    // Set at the exact point of failure, so the log names the step that gave up.
+    std::wstring failureReason_;
 
     IDXGISwapChain3* swapChain_ = nullptr;
     ID3D12Device* device_ = nullptr;
@@ -391,8 +395,10 @@ bool Dx12Tool::createDevice(HWND host) {
     // Direct3D 12 has no "create device and swap chain" convenience call, so
     // the factory, the device and the swap chain are three separate steps.
     IDXGIFactory4* factory = nullptr;
-    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory4),
-                                  reinterpret_cast<void**>(&factory)))) {
+    HRESULT hrFactory = CreateDXGIFactory1(__uuidof(IDXGIFactory4),
+                                           reinterpret_cast<void**>(&factory));
+    if (FAILED(hrFactory)) {
+        applog::writeHresult(L"Direct3D 12：CreateDXGIFactory1(IDXGIFactory4)", hrFactory);
         return false;
     }
 
@@ -427,8 +433,27 @@ bool Dx12Tool::createDevice(HWND host) {
     scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
     IDXGISwapChain1* swap1 = nullptr;
-    if (FAILED(factory->CreateSwapChainForHwnd(queue_, host, &scd, nullptr, nullptr,
-                                               &swap1))) {
+    // This is the step that matters on a translation layer: the device can build
+    // fine and the swap chain still fail, because presenting to a window is the
+    // part that has to be carried across to the host. The code says which way.
+    const HRESULT hrSwap = factory->CreateSwapChainForHwnd(queue_, host, &scd, nullptr,
+                                                           nullptr, &swap1);
+    if (FAILED(hrSwap)) {
+        applog::writeHresult(L"Direct3D 12：CreateSwapChainForHwnd（flip 模型）", hrSwap);
+        // The window, the same way the Vulkan path reports it. Whatever the
+        // translation layer objects to is most likely common to both.
+        {
+            LONG_PTR style = GetWindowLongPtrW(host, GWL_STYLE);
+            HWND parent = GetParent(host);
+            HWND root = GetAncestor(host, GA_ROOT);
+            applog::write(L"Direct3D 12：窗口 style=0x%08lX (WS_CHILD=%ls) parent=%p root=%p",
+                          static_cast<unsigned long>(style),
+                          (style & WS_CHILD) ? L"是" : L"否",
+                          reinterpret_cast<void*>(parent), reinterpret_cast<void*>(root));
+        }
+        applog::write(L"Direct3D 12：交换链参数 width=%u height=%u format=RGBA8 "
+                      L"buffers=%d swapeffect=FLIP_DISCARD 适配器=%ls",
+                      scd.Width, scd.Height, kFrameCount, adapterName.c_str());
         factory->Release();
         return false;
     }
@@ -630,24 +655,35 @@ void Dx12Tool::createSizeDependent() {}
 void Dx12Tool::releaseSizeDependent() {}
 
 bool Dx12Tool::init(HWND host) {
+    applog::write(L"Direct3D 12：开始初始化");
+
     // The command queue has to exist before the swap chain is created for it.
     D3D12_COMMAND_QUEUE_DESC qd = {};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     qd.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-    if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
-                                 __uuidof(ID3D12Device),
-                                 reinterpret_cast<void**>(&device_)))) {
+    HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
+                                   __uuidof(ID3D12Device),
+                                   reinterpret_cast<void**>(&device_));
+    if (FAILED(hr)) {
+        applog::writeHresult(L"Direct3D 12：D3D12CreateDevice", hr);
+        failureReason_ = L"无法创建 D3D12 设备";
         return false;
     }
-    if (FAILED(device_->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue),
-                                           reinterpret_cast<void**>(&queue_)))) {
+    hr = device_->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue),
+                                     reinterpret_cast<void**>(&queue_));
+    if (FAILED(hr)) {
+        applog::writeHresult(L"Direct3D 12：CreateCommandQueue", hr);
+        failureReason_ = L"无法创建命令队列";
         return false;
     }
-    if (!createDevice(host)) return false;
-    if (!createRootSignature()) return false;
-    if (!createPipeline()) return false;
-    if (!createFrameResources()) return false;
-    if (!createTargets()) return false;
+    applog::write(L"Direct3D 12：设备与队列已建立");
+
+    if (!createDevice(host)) { failureReason_ = L"无法创建交换链"; return false; }
+    if (!createRootSignature()) { failureReason_ = L"无法创建根签名"; return false; }
+    if (!createPipeline()) { failureReason_ = L"无法创建管线"; return false; }
+    if (!createFrameResources()) { failureReason_ = L"无法创建帧资源"; return false; }
+    if (!createTargets()) { failureReason_ = L"无法创建渲染目标"; return false; }
+    applog::write(L"Direct3D 12：初始化完成");
     return true;
 }
 
@@ -776,3 +812,4 @@ void Dx12Tool::shutdown() {
 Tool* createDx12() { return new Dx12Tool(); }
 
 }  // namespace render
+

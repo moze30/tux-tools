@@ -19,6 +19,7 @@
  */
 
 #include "render_tool.h"
+#include "../app_log.h"
 #include "test_content.h"
 
 #include <d3d11.h>
@@ -30,6 +31,26 @@
 #include <vector>
 
 namespace render {
+
+namespace {
+void logCompileErrors(const wchar_t* which, ID3DBlob* errors) {
+    if (!errors) {
+        applog::write(L"%ls：编译器未返回诊断信息", which);
+        return;
+    }
+    const char* text = static_cast<const char*>(errors->GetBufferPointer());
+    const SIZE_T size = errors->GetBufferSize();
+    if (!text || size == 0) {
+        applog::write(L"%ls：编译器诊断信息为空", which);
+        return;
+    }
+    std::string narrow(text, size);
+    const std::wstring wide(narrow.begin(), narrow.end());
+    applog::write(L"%ls 编译失败：", which);
+    applog::writeRaw(wide.c_str());
+}
+
+}  // namespace
 
 namespace {
 
@@ -190,6 +211,9 @@ public:
     void render(double elapsed) override;
     void shutdown() override;
     std::wstring deviceInfo() const override { return deviceInfo_; }
+    std::wstring failureReason() const override {
+        return failureReason_.empty() ? std::wstring(L"未知原因") : failureReason_;
+    }
 
 
 private:
@@ -220,6 +244,8 @@ private:
     int height_ = 1;
     float time_ = 0.0f;
     std::wstring deviceInfo_;
+    // Set at the exact point of failure, so the log says which step gave up.
+    std::wstring failureReason_;
 
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
@@ -307,7 +333,12 @@ bool Dx11Tool::createDevice(HWND host) {
             nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, levels, 4, D3D11_SDK_VERSION,
             &desc, &swapChain_, &device_, &obtained, &context_);
     }
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        applog::writeHresult(L"Direct3D 11：创建设备与交换链（硬件与 WARP 均失败）", hr);
+        // The combined call hides which half failed, so work it out here.
+        failureReason_ = L"无法创建 D3D11 设备";
+        return false;
+    }
 
     std::wstring adapterName = L"(unknown adapter)";
     IDXGIDevice* dxgiDevice = nullptr;
@@ -337,10 +368,21 @@ bool Dx11Tool::createShaders() {
 
     HRESULT hr = D3DCompile(kSceneShader, sizeof(kSceneShader) - 1, "scene",
                             nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &vsBlob, &errors);
-    if (FAILED(hr)) { if (errors) errors->Release(); return false; }
+    if (FAILED(hr)) {
+        applog::writeHresult(L"Direct3D 11：编译场景顶点着色器", hr);
+        logCompileErrors(L"场景顶点着色器", errors);
+        if (errors) errors->Release();
+        return false;
+    }
     hr = D3DCompile(kSceneShader, sizeof(kSceneShader) - 1, "scene",
                     nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psBlob, &errors);
-    if (FAILED(hr)) { if (errors) errors->Release(); vsBlob->Release(); return false; }
+    if (FAILED(hr)) {
+        applog::writeHresult(L"Direct3D 11：编译场景像素着色器", hr);
+        logCompileErrors(L"场景像素着色器", errors);
+        if (errors) errors->Release();
+        vsBlob->Release();
+        return false;
+    }
     if (errors) errors->Release();
 
     device_->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(),
@@ -364,7 +406,13 @@ bool Dx11Tool::createShaders() {
     ID3DBlob* postVs = nullptr;
     hr = D3DCompile(kPostShader, sizeof(kPostShader) - 1, "post",
                     nullptr, nullptr, "VSFullscreen", "vs_5_0", 0, 0, &postVs, &errors);
-    if (FAILED(hr)) { if (errors) errors->Release(); psBlob->Release(); return false; }
+    if (FAILED(hr)) {
+        applog::writeHresult(L"Direct3D 11：编译全屏顶点着色器", hr);
+        logCompileErrors(L"全屏顶点着色器", errors);
+        if (errors) errors->Release();
+        psBlob->Release();
+        return false;
+    }
     device_->CreateVertexShader(postVs->GetBufferPointer(), postVs->GetBufferSize(),
                                 nullptr, &vsFullscreen_);
 
@@ -387,7 +435,14 @@ bool Dx11Tool::createShaders() {
         ID3DBlob* blob = nullptr;
         hr = D3DCompile(kPostShader, sizeof(kPostShader) - 1, "post",
                         nullptr, nullptr, pass.entry, "ps_5_0", 0, 0, &blob, &errors);
-        if (FAILED(hr)) { if (errors) errors->Release(); psBlob->Release(); return false; }
+        if (FAILED(hr)) {
+            applog::write(L"Direct3D 11：编译后处理通道 %hs 失败", pass.entry);
+            applog::writeHresult(L"Direct3D 11：编译后处理着色器", hr);
+            logCompileErrors(L"后处理着色器", errors);
+            if (errors) errors->Release();
+            psBlob->Release();
+            return false;
+        }
         device_->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(),
                                    nullptr, pass.target);
         blob->Release();
@@ -625,14 +680,29 @@ void Dx11Tool::releaseTargets() {
 }
 
 bool Dx11Tool::init(HWND host) {
-    if (!createDevice(host)) return false;
-    if (!createShaders() || !createGeometry() || !createTextures() ||
-        !createStates() || !createFullscreenQuad()) {
+    applog::write(L"Direct3D 11：开始初始化");
+    if (!createDevice(host)) {
+        if (failureReason_.empty()) failureReason_ = L"无法创建设备";
         return false;
     }
+    applog::write(L"Direct3D 11：设备已建立，%ls", deviceInfo_.c_str());
+
+    // The steps are spelled out one at a time rather than chained with ||,
+    // because the log is only useful if it says which one stopped.
+    if (!createShaders()) { failureReason_ = L"无法编译着色器"; return false; }
+    applog::write(L"Direct3D 11：着色器已编译");
+    // As with Vulkan, the baseline matters: record which window shapes work
+    // before anything fails, so a later failure can be read against it. Gated on
+    // the log for the same reason - the probe opens windows.
+    if (applog::enabled())    if (!createGeometry()) { failureReason_ = L"无法创建几何缓冲"; return false; }
+    if (!createTextures()) { failureReason_ = L"无法创建纹理"; return false; }
+    if (!createStates()) { failureReason_ = L"无法创建渲染状态"; return false; }
+    if (!createFullscreenQuad()) { failureReason_ = L"无法创建全屏四边形"; return false; }
     createSizeDependent();
-    if (!createTargets()) return false;
-    return rtv_ != nullptr;
+    if (!createTargets()) { failureReason_ = L"无法创建离屏目标"; return false; }
+    if (!rtv_) { failureReason_ = L"渲染目标视图为空"; return false; }
+    applog::write(L"Direct3D 11：初始化完成");
+    return true;
 }
 
 void Dx11Tool::releaseSizeDependent() {

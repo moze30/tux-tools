@@ -14,6 +14,7 @@
 #include "log.h"
 
 #include "../theme.h"
+#include "../app_log.h"
 #include "../dpi.h"
 
 #include <commdlg.h>
@@ -144,6 +145,11 @@ namespace {
 DecodeTest* g_active = nullptr;
 
 void logThunk(const wchar_t* text) {
+    // The panel gets it either way; the debug log file gets it too when the
+    // user has switched logging on. This is where the five decoder cores'
+    // messages join the rest of the program's, which is the point of routing
+    // them through a sink in the first place.
+    applog::writeRaw(text);
     if (g_active) g_active->appendLog(text);
 }
 

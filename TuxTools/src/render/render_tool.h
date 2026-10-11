@@ -57,6 +57,16 @@ public:
 
     // Human readable description of the active device (shown in the status bar).
     virtual std::wstring deviceInfo() const = 0;
+
+    // Why the last init() returned false, in the user's terms.
+    //
+    // Each renderer used to answer only with a bool, which is why a failed
+    // start produced nothing useful in the log: thirty-odd distinct failures
+    // inside one backend all arrived as the same 'false'. Every failure path
+    // now records a line here as it happens, and the shell writes it out. The
+    // base implementation reports the generic case so a renderer that has not
+    // been instrumented yet still says something.
+    virtual std::wstring failureReason() const { return L"未知原因"; }
 };
 
 Tool* createDx9();
@@ -64,6 +74,7 @@ Tool* createDx10();
 Tool* createDx11();
 Tool* createDx12();
 Tool* createOpenGl();
+
 Tool* createVulkan();
 
 }  // namespace render
