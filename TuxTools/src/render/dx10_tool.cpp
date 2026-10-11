@@ -462,31 +462,71 @@ bool Dx10Tool::createTextures() {
     // onto. The ring's structure runs across v, which is the one direction a
     // viewer does not read as a repeating tile.
     const Texture globe = makeSaturnPlanetTexture(512);
+    applog::write(L"Direct3D 10：  行星纹理 %ux%u，%u 字节", globe.width, globe.height,
+                  static_cast<unsigned>(globe.pixels.size()));
     const Texture rings = makeSaturnRingTexture(512);
+    applog::write(L"Direct3D 10：  光环纹理 %ux%u，%u 字节", rings.width, rings.height,
+                  static_cast<unsigned>(rings.pixels.size()));
     const Texture star = makeStarSprite(64);
-
-    D3D10_TEXTURE2D_DESC desc = {};
-    desc.Width = static_cast<UINT>(globe.width);
-    desc.Height = static_cast<UINT>(globe.height);
-    desc.MipLevels = 1;
-    desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    desc.SampleDesc.Count = 1;
-    desc.Usage = D3D10_USAGE_IMMUTABLE;
-    desc.BindFlags = D3D10_BIND_SHADER_RESOURCE;
+    applog::write(L"Direct3D 10：  星点纹理 %ux%u，%u 字节", star.width, star.height,
+                  static_cast<unsigned>(star.pixels.size()));
 
     const Texture* sources[3] = {&globe, &rings, &star};
     ID3D10ShaderResourceView** targets[3] = {&frameTexture_, &panelTexture_, &starSprite_};
     for (int i = 0; i < 3; ++i) {
+        const Texture& source = *sources[i];
+
+        // The description is rebuilt for every texture rather than shared.
+        //
+        // It used to be built once from the first texture and then reused for all
+        // three. Two of the three are 512 square and the third is 64, so the
+        // third was declared as 512 while only holding 64 rows of pixels: the
+        // upload read well past the end of the buffer and the process died inside
+        // the C run time, which is a long way from the line that caused it. The
+        // sizes happened to differ only in this backend, which is why only this
+        // one crashed.
+        D3D10_TEXTURE2D_DESC desc = {};
+        desc.Width = static_cast<UINT>(source.width);
+        desc.Height = static_cast<UINT>(source.height);
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D10_USAGE_IMMUTABLE;
+        desc.BindFlags = D3D10_BIND_SHADER_RESOURCE;
+
         D3D10_SUBRESOURCE_DATA init = {};
-        init.pSysMem = sources[i]->pixels.data();
-        init.SysMemPitch = static_cast<UINT>(sources[i]->width) * 4;
+        init.pSysMem = source.pixels.data();
+        init.SysMemPitch = static_cast<UINT>(source.width) * 4;
+
+        // Belt and braces: the buffer must be able to supply every row the
+        // description claims. A mismatch here is a bug in the caller, and failing
+        // cleanly with a line in the log is far better than the alternative.
+        const size_t needed =
+            static_cast<size_t>(source.width) * source.height * 4;
+        if (source.pixels.size() < needed) {
+            applog::write(L"Direct3D 10：第 %d 张纹理数据不足"
+                          L"（需要 %u 字节，实际 %u 字节）",
+                          i, static_cast<unsigned>(needed),
+                          static_cast<unsigned>(source.pixels.size()));
+            return false;
+        }
+
         ID3D10Texture2D* texture = nullptr;
-        if (FAILED(device_->CreateTexture2D(&desc, &init, &texture))) return false;
+        if (FAILED(device_->CreateTexture2D(&desc, &init, &texture))) {
+            applog::write(L"Direct3D 10：上传第 %d 张纹理失败（%dx%d）", i,
+                          source.width, source.height);
+            return false;
+        }
         const HRESULT hr =
             device_->CreateShaderResourceView(texture, nullptr, targets[i]);
         texture->Release();
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) {
+            applog::writeHresult(L"Direct3D 10：为一纹理创建视图", hr);
+            return false;
+        }
+        applog::write(L"Direct3D 10：  第 %d 张纹理已上传（%dx%d）", i, source.width,
+                      source.height);
     }
 
     D3D10_SAMPLER_DESC sd = {};

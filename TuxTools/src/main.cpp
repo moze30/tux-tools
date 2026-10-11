@@ -204,6 +204,21 @@ struct AppState {
     // this flag records that the current one is contaminated.
     bool renderHostStale = false;
 
+    // Whether the renderer is currently drawing into a top level popup instead
+    // of a child of this window.
+    //
+    // It starts false on every platform. The renderer is given a child window
+    // first because that is the shape that belongs inside this window's layout;
+    // if a backend then fails to start, the same backend is retried once on a
+    // popup, and the answer is remembered in detachWorks. Wine on Winlator only
+    // implements window presentation for top level windows, so there the retry
+    // is what makes the driver test work at all, while on Windows nothing ever
+    // fails and the popup is never used.
+    bool detachRenderHost = false;
+    bool detachWorks = false;
+    bool detachTried = false;
+    HWND detachedHost = nullptr;
+
     HICON logo = nullptr;
 
     HFONT font = nullptr;
@@ -274,6 +289,19 @@ void loadCurrentApi(HWND hwnd);
 void destroyRenderer(HWND hwnd);
 void ensureRenderer(HWND hwnd);
 void createRenderHost(HWND hwnd);
+
+// Window procedure for the detached render host.
+//
+// The popup lies over the content area of the main window, so without this it
+// would swallow every click meant for the window underneath. Returning
+// HTTRANSPARENT from the hit test passes those clicks straight through, which
+// makes the popup behave as if it were not there as far as input is concerned.
+// Nothing else is handled: the graphics API owns the window surface, and the
+// rest is left to the default procedure.
+LRESULT CALLBACK detachedHostProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_NCHITTEST) return HTTRANSPARENT;
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
 void startRender(HWND hwnd);
 void stopRender(HWND hwnd);
 
@@ -307,13 +335,56 @@ void createRenderHost(HWND hwnd) {
     if (!s) return;
 
     HINSTANCE inst = GetModuleHandleW(nullptr);
-    HWND host = CreateWindowExW(0, L"TuxToolsRenderHost", L"",
-        WS_CHILD | WS_CLIPCHILDREN, 0, 0, 0, 0, hwnd,
-        reinterpret_cast<HMENU>(ID_RENDER_HOST), inst, nullptr);
-    if (!host) return;
+
+    HWND host = nullptr;
+
+    if (s->detachRenderHost) {
+        // The experimental path: an owned popup rather than a child. It still
+        // belongs to the main window - it minimises and closes with it - but it
+        // is a top level window, which is the shape every standalone Vulkan or
+        // Direct3D sample uses and the shape a translation layer is most likely
+        // to have been tested against.
+        if (s->detachedHost && IsWindow(s->detachedHost)) {
+            DestroyWindow(s->detachedHost);
+        }
+        // The menu slot is the child-window control id and must be left null for
+        // a popup, where the same parameter means a menu handle instead. Passing
+        // the id here is what made CreateWindowEx fail with
+        // ERROR_CLASS_DOES_NOT_EXIST - a thoroughly misleading error for it.
+        // NOACTIVATE keeps a click on the popup from pulling activation away
+        // from the main window, and the class's hit test lets the click through
+        // to the window beneath as well.
+        // TOPMOST, because the popup lies over the main window and would
+        // otherwise be covered by it whenever that window is repainted or
+        // activated. The symptom of getting this wrong is a blank canvas with a
+        // moving frame rate: the renderer is drawing, nothing is visible, and the
+        // white fill of the window underneath is what is on screen.
+        host = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+                               L"TuxToolsRenderHostDetached", L"",
+                               WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                               0, 0, 0, 0, hwnd, nullptr, inst, nullptr);
+        s->detachedHost = host;
+    } else {
+        host = CreateWindowExW(0, L"TuxToolsRenderHost", L"",
+            WS_CHILD | WS_CLIPCHILDREN, 0, 0, 0, 0, hwnd,
+            reinterpret_cast<HMENU>(ID_RENDER_HOST), inst, nullptr);
+    }
+    if (!host) {
+        applog::write(L"创建渲染宿主窗口失败（错误 %lu）", GetLastError());
+        return;
+    }
 
     const RECT r = s->renderHostRect;
-    MoveWindow(host, r.left, r.top, r.right - r.left, r.bottom - r.top, FALSE);
+    if (s->detachRenderHost) {
+        // An owned popup is positioned in screen coordinates, so the client
+        // rectangle has to be mapped out to the screen.
+        POINT tl = {r.left, r.top};
+        ClientToScreen(hwnd, &tl);
+        SetWindowPos(host, HWND_TOPMOST, tl.x, tl.y, r.right - r.left,
+                     r.bottom - r.top, SWP_NOACTIVATE);
+    } else {
+        MoveWindow(host, r.left, r.top, r.right - r.left, r.bottom - r.top, FALSE);
+    }
 
     // Swap the new window in before the old one goes away, so the canvas never
     // shows a hole, then retire the old host.
@@ -321,6 +392,8 @@ void createRenderHost(HWND hwnd) {
     s->renderHost = host;
     s->renderHostStale = false;
 
+    applog::write(L"驱动测试：新渲染宿主窗口 %p（%ls）", reinterpret_cast<void*>(host),
+                  host == old ? L"沿用旧窗口" : L"全新窗口");
     ShowWindow(host, s->tool == ToolKind::DriverTest ? SW_SHOW : SW_HIDE);
     if (old) {
         ShowWindow(old, SW_HIDE);
@@ -337,22 +410,37 @@ void ensureRenderer(HWND hwnd) {
 
     destroyRenderer(hwnd);
 
-    // Direct3D 12 uses a flip model swap chain and every other backend here
-    // uses the older bitblt model. Once a flip model chain has presented on a
-    // window, the compositor keeps that window's presentation surface showing
-    // the chain's final frame; a bitblt chain created on the same window still
-    // draws and still presents, but never reaches the screen, so the canvas
-    // stays frozen on Direct3D 12 no matter which backend is started next.
-    // Replacing the host window discards that surface, which is what makes the
-    // switch work.
-    if (s->renderHostStale) createRenderHost(hwnd);
+    // Once a popup has been shown to work, keep using one: remembering that is
+    // the point of detachWorks, so the failure is not paid again per backend.
+    if (s->detachWorks && !s->detachRenderHost) {
+        s->detachRenderHost = true;
+    }
+
+    // A fresh host window for every start, unconditionally.
+    //
+    // This used to be done only for the three backends known to leave the window
+    // unusable: Direct3D 12 and Vulkan through a flip model chain the compositor
+    // keeps showing, and OpenGL because SetPixelFormat may only be called once.
+    // That list turned out to be incomplete. Measured on Wine, a window that has
+    // hosted one Direct3D present never shows the next one either - Direct3D 10
+    // and 11 both rendered at full rate into a window nothing reached the screen
+    // from, and the canvas stayed on whatever the window underneath painted.
+    //
+    // Rather than extend the list every time another backend is found to be
+    // affected, the window is now always new. It costs one CreateWindow per
+    // start, which is nothing next to creating a graphics device, and it removes
+    // the class of fault entirely.
+    createRenderHost(hwnd);
 
     HWND host = s->renderHost;
     RECT rc;
     GetClientRect(host, &rc);
     int w = rc.right - rc.left;
     int h = rc.bottom - rc.top;
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0) {
+        applog::write(L"驱动测试：渲染区尺寸无效（%dx%d），跳过初始化", w, h);
+        return;
+    }
 
     render::Tool* tool = nullptr;
     switch (s->dxApi) {
@@ -366,33 +454,56 @@ void ensureRenderer(HWND hwnd) {
     if (!tool) return;
 
     if (!tool->init(host)) {
+        // The backend recorded why as it failed; without this line the log would
+        // say only that the test started and stopped, which is exactly what made
+        // the first version of this log useless.
+        const std::wstring why = tool->failureReason();
+        applog::write(L"驱动测试：%ls 初始化失败 - %ls", dxApiLabel(s->dxApi),
+                      why.c_str());
         delete tool;
         s->renderer = nullptr;
         s->rendererReady = false;
-        s->renderDeviceInfo = std::wstring(L"无法初始化 ") + dxApiLabel(s->dxApi);
+
+        // One automatic retry on a top level window. Some translation layers -
+        // Wine on Winlator is the one this was written for - implement window
+        // presentation for top level windows only, so a backend that cannot use
+        // a child window works normally once given a popup. The retry happens
+        // once per run and only after a real failure, so on a platform where the
+        // child window works this code never runs.
+        if (!s->detachRenderHost && !s->detachTried) {
+            s->detachTried = true;
+            applog::write(L"驱动测试：改用顶层窗口重试 %ls", dxApiLabel(s->dxApi));
+            s->detachRenderHost = true;
+            // ensureRenderer creates the window itself, at the top of the call.
+            ensureRenderer(hwnd);
+            if (s->rendererReady) {
+                // Remember the answer: later backends go straight to a popup
+                // instead of failing once more each.
+                s->detachWorks = true;
+                applog::write(L"驱动测试：顶层窗口可用，后续后端将直接使用");
+            } else {
+                s->detachRenderHost = false;
+                createRenderHost(hwnd);
+            }
+        }
+
+        if (s->rendererReady) return;
+        s->renderDeviceInfo = std::wstring(L"无法初始化 ") + dxApiLabel(s->dxApi) +
+                              L"：" + why;
         return;
     }
+    applog::write(L"驱动测试：%ls 初始化成功 - %ls", dxApiLabel(s->dxApi),
+                  tool->deviceInfo().c_str());
 
     s->renderer = tool;
     s->rendererApi = s->dxApi;
     s->rendererReady = true;
     s->renderDeviceInfo = tool->deviceInfo();
 
-    // Three of the backends leave the host window in a state the next one
-    // cannot use, so each records that here and the shell hands out a fresh
-    // window next time:
-    //
-    //   Direct3D 12  presents through a flip model swap chain, which the
-    //                compositor keeps showing after the chain is released.
-    //   Vulkan       reaches the window through a Win32 surface, and the
-    //                loader implements that with the same flip model path.
-    //   OpenGL       can only ever have SetPixelFormat called on it once, so
-    //                a window OpenGL has been initialised on cannot be reused
-    //                by a second OpenGL context.
-    if (s->dxApi == DxApi::Dx12 || s->dxApi == DxApi::Vulkan ||
-        s->dxApi == DxApi::OpenGl) {
-        s->renderHostStale = true;
-    }
+    // Every backend is treated as having spoiled its window, so the flag is set
+    // for all of them. It is now only a record of what happened; the shell no
+    // longer consults it before rebuilding, because rebuilding is unconditional.
+    s->renderHostStale = true;
 
     QueryPerformanceFrequency(&s->perfFrequency);
     LARGE_INTEGER now;
@@ -426,6 +537,26 @@ void startRender(HWND hwnd) {
     s->fpsWindowStart = now;
     s->framesInWindow = 0;
     s->currentFps = 0.0;
+    // Re-assert the host placement before the first frame. Starting a backend is
+    // exactly when the window can have drifted behind the main window - a
+    // previous stop, a resize, or a repaint of the window underneath - and doing
+    // it here means the canvas is on screen before anything is drawn into it.
+    if (s->detachRenderHost && s->renderHost) {
+        RECT r2 = s->renderHostRect;
+        POINT tl = {r2.left, r2.top};
+        ClientToScreen(hwnd, &tl);
+        SetWindowPos(s->renderHost, HWND_TOPMOST, tl.x, tl.y, r2.right - r2.left,
+                     r2.bottom - r2.top, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        // Recorded because "the canvas is blank but the frame rate moves" is
+        // ambiguous between a window that is hidden and one that is behind the
+        // window underneath, and these four facts separate them.
+        LONG_PTR ex = GetWindowLongPtrW(s->renderHost, GWL_EXSTYLE);
+        applog::write(L"驱动测试：宿主窗口 可见=%ls 置顶=%ls 位置=%ld,%ld 尺寸=%ldx%ld",
+                      IsWindowVisible(s->renderHost) ? L"是" : L"否",
+                      (ex & WS_EX_TOPMOST) ? L"是" : L"否", tl.x, tl.y,
+                      r2.right - r2.left, r2.bottom - r2.top);
+    }
+
     s->renderRunning = true;
     updateStatus(hwnd);
     InvalidateRect(hwnd, nullptr, TRUE);
@@ -758,8 +889,22 @@ void layoutChildren(HWND hwnd) {
     int hostHeight = hostBottom - hostTop;
     if (hostHeight < 0) hostHeight = 0;
     s->renderHostRect = {hostLeft, hostTop, rc.right - theme::kSpaceXL, hostBottom};
-    MoveWindow(s->renderHost, hostLeft, hostTop,
-               rc.right - theme::kSpaceXL - hostLeft, hostHeight, TRUE);
+    if (s->detachRenderHost && s->renderHost) {
+        // A popup is placed in screen coordinates and must not be touched while
+        // hidden: moving a hidden window is fine, but showing it here would put
+        // it on screen outside the driver test.
+        POINT tl = {hostLeft, hostTop};
+        ClientToScreen(hwnd, &tl);
+        // TOPMOST rather than TOP: see the comment on the window creation. The
+        // popup has to stay above the window it covers, not merely above its
+        // siblings.
+        SetWindowPos(s->renderHost, HWND_TOPMOST, tl.x, tl.y,
+                     rc.right - theme::kSpaceXL - hostLeft, hostHeight,
+                     SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    } else {
+        MoveWindow(s->renderHost, hostLeft, hostTop,
+                   rc.right - theme::kSpaceXL - hostLeft, hostHeight, TRUE);
+    }
 
     // Run/stop button in the page header, right-aligned.
     int runW = dpi::scale(96);
@@ -1527,6 +1672,21 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     hostClass.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     hostClass.lpszClassName = L"TuxToolsRenderHost";
     RegisterClassW(&hostClass);
+
+    // The detached host gets a class of its own. Reusing the one above fails
+    // with ERROR_CLASS_DOES_NOT_EXIST: a class is registered against the instance
+    // and the first registration wins, so the popup creation is rejected before
+    // it is even attempted. A second class avoids the question entirely.
+    WNDCLASSW popupClass = {};
+    popupClass.lpfnWndProc = detachedHostProc;
+    popupClass.hInstance = inst;
+    popupClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    popupClass.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    popupClass.lpszClassName = L"TuxToolsRenderHostDetached";
+    RegisterClassW(&popupClass);
+    // The first host is always a child. A child window is the shape that belongs
+    // in this window's layout, and if a backend turns out to need a popup, the
+    // retry in ensureRenderer replaces this window; see detachWorks.
     s->renderHost = CreateWindowExW(0, hostClass.lpszClassName, L"",
         WS_CHILD | WS_CLIPCHILDREN, 0, 0, 0, 0, hwnd,
         reinterpret_cast<HMENU>(ID_RENDER_HOST), inst, nullptr);
@@ -1545,6 +1705,27 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             layoutChildren(hwnd);
             updateToolVisibility(hwnd);
             loadCurrentApi(hwnd);
+            return 0;
+        }
+        case WM_ACTIVATE: {
+            // The detached host is topmost so that it stays above the window it
+            // covers. That would also make it hang over other applications, so it
+            // is hidden whenever this window is not the active one and brought
+            // back when it is. Without this the canvas would follow the user into
+            // whatever else they switched to.
+            if (s && s->detachRenderHost && s->renderHost) {
+                const bool active = LOWORD(wParam) != WA_INACTIVE;
+                ShowWindow(s->renderHost, active ? SW_SHOWNOACTIVATE : SW_HIDE);
+                if (active && s->renderRunning) layoutChildren(hwnd);
+            }
+            break;
+        }
+        case WM_MOVE: {
+            // A popup is positioned in screen coordinates, so it has to be moved
+            // whenever the window it sits over moves. layoutChildren recalculates
+            // the placement from the client rectangle, which the move has just
+            // changed.
+            if (s && s->detachRenderHost) layoutChildren(hwnd);
             return 0;
         }
         case WM_SIZE: {
@@ -2001,14 +2182,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     (void)cmdLine;
     std::wstring startupFile;
     int startupMethod = -1;
+    int startupDriver = -1;   // DxApi index when --driver was given
+    int startupDriverRun = 0; // whether to press start as well
     {
         int argc = 0;
         LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
         if (argv) {
-            // Accepted forms:  <file>   |   <method> <file>
-            // where <method> is 0..5, matching the sidebar order.
+            // Accepted forms:
+            //   <file>                     decode test, default method
+            //   <method> <file>            decode test, method 0..5
+            //   --driver <api> [run]       driver test, api 0..5
             int first = 1;
-            if (argc >= 3) {
+            if (argc >= 3 && !wcscmp(argv[1], L"--driver")) {
+                wchar_t* end = nullptr;
+                const long v = wcstol(argv[2], &end, 10);
+                if (end && *end == 0 && v >= 0 && v < 6) {
+                    startupDriver = static_cast<int>(v);
+                    startupDriverRun = (argc >= 4 && !wcscmp(argv[3], L"run")) ? 1 : 0;
+                }
+            } else if (argc >= 3) {
                 wchar_t* end = nullptr;
                 const long v = wcstol(argv[1], &end, 10);
                 if (end && *end == 0 && v >= 0 && v < 6) {
@@ -2016,7 +2208,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
                     first = 2;
                 }
             }
-            if (argc > first) startupFile = argv[first];
+            if (argc > first && startupDriver < 0) startupFile = argv[first];
             LocalFree(argv);
         }
     }
@@ -2048,6 +2240,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
                                 dpi::scale(1140), dpi::scale(760),
                                 nullptr, nullptr, instance, nullptr);
     if (!hwnd) return 1;
+
+    // --driver switches to the driver test on a named API, which is what makes
+    // the six backends scriptable: a log per backend can be produced without
+    // driving the sidebar by hand.
+    if (startupDriver >= 0) {
+        AppState* s = state(hwnd);
+        if (s) {
+            // --driver only chooses which backend to start. How the window is
+            // chosen is the renderer's business and is decided by what works, so
+            // there is nothing to set here.
+            selectTool(hwnd, ToolKind::DriverTest);
+            s->dxApi = static_cast<DxApi>(startupDriver);
+            ui::sectionListSetSelection(s->sectionList, startupDriver);
+            updateValueList(hwnd);
+            if (startupDriverRun) startRender(hwnd);
+        }
+    }
 
     // A path on the command line switches to the decode test and starts it.
     // This happens after CreateWindow so the child surfaces exist; loading the
