@@ -17,11 +17,13 @@
 #include <windowsx.h>
 #include <uxtheme.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 
 #include "collectors.h"
 #include "theme.h"
 #include "ui_controls.h"
 #include "render/render_tool.h"
+#include "decode/decode_test.h"
 #include "resource.h"
 
 #include <cstdint>
@@ -51,7 +53,7 @@ const std::wstring kToolLabel = L"驱动能力查看器";
 enum class Api { OpenGL = 0, Vulkan = 1 };
 
 // Which tool is currently active in the shell.
-enum class ToolKind { DriverCaps = 0, DriverTest = 1 };
+enum class ToolKind { DriverCaps = 0, DriverTest = 1, DecodeTest = 2 };
 
 // Entries of the "driver test" tool, in sidebar order.
 enum class DxApi { Dx9 = 0, Dx10 = 1, Dx11 = 2, Dx12 = 3, OpenGl = 4, Vulkan = 5 };
@@ -118,6 +120,19 @@ struct AppState {
     LARGE_INTEGER fpsWindowStart = {};
     double currentFps = 0.0;
     std::wstring renderDeviceInfo;
+
+    // Decode test tool state. The decoder owns the video surface and the log;
+    // the shell only lays it out and forwards the timer.
+    decode::DecodeTest* decoder = nullptr;
+    bool decoderReady = false;
+    bool openButtonHot = false;
+    bool openButtonPressed = false;
+    // The decode status line is rebuilt every tick; only push it to the status
+    // bar when it actually changed, to avoid a window message per frame.
+    std::wstring lastDecodeStatus;
+    RECT openButtonRect = {};
+    RECT videoRect = {};
+    RECT logRect = {};
 
     int apiHot = -1;
     int sectionHot = -1;
@@ -395,7 +410,7 @@ void populateSections(HWND hwnd) {
             titles.push_back(section.title);
             counts.push_back(static_cast<int>(section.fields.size()));
         }
-    } else {
+    } else if (s->tool == ToolKind::DriverTest) {
         titles.push_back(L"Direct3D 9");
         titles.push_back(L"Direct3D 10");
         titles.push_back(L"Direct3D 11");
@@ -403,6 +418,11 @@ void populateSections(HWND hwnd) {
         titles.push_back(L"OpenGL");
         titles.push_back(L"Vulkan");
         counts.assign(6, -1);
+    } else if (s->tool == ToolKind::DecodeTest) {
+        for (int i = 0; i < 6; ++i) {
+            titles.push_back(decode::methodName(static_cast<decode::Method>(i)));
+            counts.push_back(-1);
+        }
     }
     ui::sectionListSetItems(s->sectionList, titles, counts);
     ui::sectionListSetSelection(s->sectionList, 0);
@@ -428,6 +448,21 @@ void updateValueList(HWND hwnd) {
         default: s->dxApi = DxApi::Dx9; break;
     }
             stopRender(hwnd);
+        }
+        updateStatus(hwnd);
+        InvalidateRect(hwnd, nullptr, TRUE);
+        return;
+    }
+
+    if (s->tool == ToolKind::DecodeTest) {
+        // The sidebar selects one of the six decoding paths. Changing it stops
+        // whatever is playing, because only one decoder can own the video
+        // surface at a time.
+        if (s->decoder) {
+            int index = ui::sectionListGetSelection(s->sectionList);
+            if (index >= 0 && index < 6) {
+                s->decoder->setMethod(static_cast<decode::Method>(index));
+            }
         }
         updateStatus(hwnd);
         InvalidateRect(hwnd, nullptr, TRUE);
@@ -467,6 +502,16 @@ void updateStatus(HWND hwnd) {
         SetWindowTextW(s->status, text.c_str());
         return;
     }
+    if (s->tool == ToolKind::DecodeTest) {
+        std::wstring text;
+        if (s->decoder) {
+            text = s->decoder->statusText();
+            if (text.empty()) text = s->decoder->filePath();
+        }
+        if (text.empty()) text = L"选择一种解码方式，打开媒体文件后点击开始";
+        SetWindowTextW(s->status, text.c_str());
+        return;
+    }
     viewer::Report& report = currentReport(s);
     SetWindowTextW(s->status, report.description.c_str());
 }
@@ -480,8 +525,10 @@ void showToolMenu(HWND hwnd) {
     HMENU menu = CreatePopupMenu();
     UINT capsFlags = MF_STRING | (s->tool == ToolKind::DriverCaps ? MF_CHECKED : 0);
     UINT testFlags = MF_STRING | (s->tool == ToolKind::DriverTest ? MF_CHECKED : 0);
+    UINT decodeFlags = MF_STRING | (s->tool == ToolKind::DecodeTest ? MF_CHECKED : 0);
     AppendMenuW(menu, capsFlags, 1, L"驱动能力查看器");
     AppendMenuW(menu, testFlags, 2, L"驱动测试");
+    AppendMenuW(menu, decodeFlags, 3, L"解码测试");
 
     RECT r = s->toolButtonRect;
     POINT pt = {r.left, r.bottom};
@@ -492,6 +539,7 @@ void showToolMenu(HWND hwnd) {
 
     if (cmd == 1) selectTool(hwnd, ToolKind::DriverCaps);
     else if (cmd == 2) selectTool(hwnd, ToolKind::DriverTest);
+    else if (cmd == 3) selectTool(hwnd, ToolKind::DecodeTest);
 }
 
 void selectTool(HWND hwnd, ToolKind tool) {
@@ -505,6 +553,11 @@ void selectTool(HWND hwnd, ToolKind tool) {
         ui::sectionListSetSelection(s->sectionList, 0);
         s->dxApi = DxApi::Dx9;
         s->renderRunning = false;  // do not auto-run; wait for "开始"
+    } else if (tool == ToolKind::DecodeTest) {
+        destroyRenderer(hwnd);
+        if (s->decoder) s->decoder->setMethod(decode::Method::DirectShowSoftware);
+        updateToolVisibility(hwnd);
+        ui::sectionListSetSelection(s->sectionList, 0);
     } else {
         destroyRenderer(hwnd);
         updateToolVisibility(hwnd);
@@ -653,6 +706,29 @@ void layoutChildren(HWND hwnd) {
     s->runButtonRect = {rc.right - theme::kSpaceXL - runW, runTop,
                         rc.right - theme::kSpaceXL, runTop + runH};
 
+    // Decode test: an "open file" button sits to the left of the run button,
+    // and the content area below the header splits into the video surface and
+    // the log. The video keeps the larger share; the log is a fixed band at the
+    // bottom so its height does not jump as lines arrive.
+    s->openButtonRect = {s->runButtonRect.left - theme::kSpaceS - runW, runTop,
+                         s->runButtonRect.left - theme::kSpaceS, runTop + runH};
+    {
+        int vTop = topBar + pageHeader;
+        int vLeft = theme::kSidebarWidth + theme::kSpaceXL;
+        int vBottom = contentBottom - theme::kSpaceL;
+        int logH = dpi::scale(140);
+        int vHeight = (vBottom - vTop) - logH - theme::kSpaceM;
+        if (vHeight < dpi::scale(80)) vHeight = dpi::scale(80);
+        s->videoRect = {vLeft, vTop, rc.right - theme::kSpaceXL, vTop + vHeight};
+        s->logRect = {vLeft, s->videoRect.bottom + theme::kSpaceM,
+                      rc.right - theme::kSpaceXL, vBottom};
+        if (s->decoder) {
+            s->decoder->layout(rc, s->videoRect.left, s->videoRect.top,
+                               s->videoRect.right - s->videoRect.left,
+                               s->videoRect.bottom - s->videoRect.top);
+        }
+    }
+
     MoveWindow(s->status, theme::kSpaceL, statusTop, rc.right - theme::kSpaceL * 2,
                theme::kStatusHeight, TRUE);
 }
@@ -662,8 +738,10 @@ void updateToolVisibility(HWND hwnd) {
     AppState* s = state(hwnd);
     if (!s) return;
     bool test = s->tool == ToolKind::DriverTest;
-    ShowWindow(s->valueList, test ? SW_HIDE : SW_SHOW);
+    bool decodeTool = s->tool == ToolKind::DecodeTest;
+    ShowWindow(s->valueList, (test || decodeTool) ? SW_HIDE : SW_SHOW);
     ShowWindow(s->renderHost, test ? SW_SHOW : SW_HIDE);
+    if (s->decoder) s->decoder->show(decodeTool);
     ShowWindow(s->search, SW_SHOW);
 }
 
@@ -695,7 +773,9 @@ void paintTopBar(HWND hwnd, HDC dc, const RECT& client) {
                              : (hot ? RGB(0xF2, 0xF2, 0xF2) : RGB(0xFF, 0xFF, 0xFF));
         fillRoundRect(dc, r, theme::kRadiusControl, fill);
         COLORREF text = RGB(0x21, 0x21, 0x21);
-        std::wstring label = s->tool == ToolKind::DriverCaps ? L"驱动能力查看器" : L"驱动测试";
+        std::wstring label = L"驱动能力查看器";
+        if (s->tool == ToolKind::DriverTest) label = L"驱动测试";
+        else if (s->tool == ToolKind::DecodeTest) label = L"解码测试";
         RECT textRc = r;
         textRc.left += theme::kSpaceM;
         textRc.right -= theme::kSpaceM;
@@ -772,12 +852,21 @@ void paintSidebarHeader(HWND hwnd, HDC dc) {
     RECT sidebar = {0, theme::kTopBarHeight, theme::kSidebarWidth, s->statusRect.top};
     fillRect(dc, sidebar, theme::kSidebarBg);
 
+    // Only the capability viewer has anything to put in a segmented switch: it
+    // reports on OpenGL and Vulkan and you pick which. The other two tools put a
+    // heading here instead, and the section list below is the only control.
     if (s->tool == ToolKind::DriverTest) {
-        // A simple heading; the list below selects the Direct3D API.
         RECT heading = {theme::kSpaceL, theme::kTopBarHeight + theme::kSpaceM,
                         theme::kSidebarWidth - theme::kSpaceL,
                         s->glSwitchRect.bottom};
         drawText(dc, L"图形 API 测试", heading, theme::kPageSubtitle, s->boldFont);
+        return;
+    }
+    if (s->tool == ToolKind::DecodeTest) {
+        RECT heading = {theme::kSpaceL, theme::kTopBarHeight + theme::kSpaceM,
+                        theme::kSidebarWidth - theme::kSpaceL,
+                        s->glSwitchRect.bottom};
+        drawText(dc, L"解码方式", heading, theme::kPageSubtitle, s->boldFont);
         return;
     }
 
@@ -820,6 +909,42 @@ void paintContent(HWND hwnd, HDC dc, const RECT& client) {
         fillRoundRect(dc, r, theme::kRadiusControl, fill);
         drawText(dc, s->renderRunning ? L"停止" : L"开始", r, theme::kTopBarText,
                  s->boldFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        RECT line = {theme::kSidebarWidth, theme::kTopBarHeight,
+                     theme::kSidebarWidth + 1, s->statusRect.top};
+        fillRect(dc, line, theme::kBorder);
+        return;
+    }
+
+    if (s && s->tool == ToolKind::DecodeTest) {
+        RECT titleRc = {theme::kSidebarWidth + theme::kSpaceXL, theme::kTopBarHeight + 14,
+                        s->openButtonRect.left - theme::kSpaceM, theme::kTopBarHeight + 42};
+        std::wstring title = L"解码测试";
+        if (s->decoder) title += std::wstring(L" - ") + decode::methodName(s->decoder->method());
+        drawText(dc, title, titleRc, theme::kPageTitle, s->titleFont);
+
+        // Open file button.
+        RECT ob = s->openButtonRect;
+        COLORREF obFill = s->openButtonPressed && s->openButtonHot
+                              ? theme::kAccentBorder
+                              : (s->openButtonHot ? theme::kAccentHover : theme::kAccent);
+        fillRoundRect(dc, ob, theme::kRadiusControl, obFill);
+        drawText(dc, L"打开文件", ob, theme::kTopBarText, s->font,
+                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        // Run / stop button.
+        RECT r = s->runButtonRect;
+        bool down = s->runButtonPressed && s->runButtonHot;
+        COLORREF fill = down ? theme::kAccentBorder
+                             : (s->runButtonHot ? theme::kAccentHover : theme::kAccent);
+        fillRoundRect(dc, r, theme::kRadiusControl, fill);
+        const bool running = s->decoder && s->decoder->running();
+        drawText(dc, running ? L"停止" : L"开始", r, theme::kTopBarText,
+                 s->boldFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        // The video surface is a child window and paints itself; only the log
+        // panel is drawn here.
+        if (s->decoder) s->decoder->paint(dc, s->logRect);
 
         RECT line = {theme::kSidebarWidth, theme::kTopBarHeight,
                      theme::kSidebarWidth + 1, s->statusRect.top};
@@ -1028,6 +1153,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(ID_STATUS_TEXT), inst, nullptr);
             SendMessageW(s->status, WM_SETFONT, reinterpret_cast<WPARAM>(s->font), TRUE);
 
+            // The decode test owns a video surface and a log; it is created up
+            // front so switching to it is instant, and hidden until selected.
+            s->decoder = new decode::DecodeTest();
+            s->decoderReady = s->decoder->init(hwnd);
+
             layoutChildren(hwnd);
             updateToolVisibility(hwnd);
             loadCurrentApi(hwnd);
@@ -1093,7 +1223,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
 
             int hot = -1;
-            if (caption == kCaptionNone) {
+            if (caption == kCaptionNone && s->tool == ToolKind::DriverCaps) {
                 if (PtInRect(&s->glSwitchRect, pt)) hot = 0;
                 else if (PtInRect(&s->vkSwitchRect, pt)) hot = 1;
             }
@@ -1105,6 +1235,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (toolHot != s->toolHot) {
                 s->toolHot = toolHot;
                 changed = true;
+            }
+            bool openHot = false;
+            if (s->tool == ToolKind::DecodeTest) {
+                openHot = PtInRect(&s->openButtonRect, pt) != 0;
+                bool runHotDecode = PtInRect(&s->runButtonRect, pt) != 0;
+                if (openHot != s->openButtonHot || runHotDecode != s->runButtonHot) {
+                    s->openButtonHot = openHot;
+                    s->runButtonHot = runHotDecode;
+                    RECT header = {0, 0, 600000, theme::kTopBarHeight + dpi::scale(64)};
+                    InvalidateRect(hwnd, &header, FALSE);
+                }
             }
             bool runHot = s->tool == ToolKind::DriverTest && PtInRect(&s->runButtonRect, pt);
             if (runHot != s->runButtonHot) {
@@ -1160,18 +1301,56 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
-            if (PtInRect(&s->glSwitchRect, pt)) selectApi(hwnd, Api::OpenGL);
-            else if (PtInRect(&s->vkSwitchRect, pt)) selectApi(hwnd, Api::Vulkan);
+            if (s->tool == ToolKind::DecodeTest) {
+                if (PtInRect(&s->openButtonRect, pt)) {
+                    s->openButtonPressed = true;
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (PtInRect(&s->runButtonRect, pt)) {
+                    s->runButtonPressed = true;
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+            // The OpenGL / Vulkan switch belongs to the capability viewer only.
+            // The other tools draw a heading over the same rectangle, so without
+            // this guard a click there would silently retarget the viewer.
+            if (s->tool == ToolKind::DriverCaps) {
+                if (PtInRect(&s->glSwitchRect, pt)) selectApi(hwnd, Api::OpenGL);
+                else if (PtInRect(&s->vkSwitchRect, pt)) selectApi(hwnd, Api::Vulkan);
+            }
             return 0;
         }
         case WM_LBUTTONUP: {
             if (!s) return 0;
+            if (s->openButtonPressed) {
+                s->openButtonPressed = false;
+                ReleaseCapture();
+                POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                if (PtInRect(&s->openButtonRect, pt) && s->decoder) {
+                    s->decoder->chooseFile(hwnd);
+                    updateStatus(hwnd);
+                }
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
             if (s->runButtonPressed) {
                 s->runButtonPressed = false;
                 ReleaseCapture();
                 POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 if (PtInRect(&s->runButtonRect, pt)) {
-                    if (s->renderRunning) {
+                    if (s->tool == ToolKind::DecodeTest) {
+                        if (!s->decoder) return 0;
+                        if (s->decoder->running()) {
+                            s->decoder->stop();
+                        } else {
+                            s->decoder->start();
+                        }
+                        updateStatus(hwnd);
+                    } else if (s->renderRunning) {
                         stopRender(hwnd);
                     } else {
                         startRender(hwnd);
@@ -1249,6 +1428,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_DESTROY: {
             if (s) {
                 destroyRenderer(hwnd);
+                if (s->decoder) {
+                    s->decoder->shutdown();
+                    delete s->decoder;
+                    s->decoder = nullptr;
+                }
                 destroyLogo(s);
                 deleteFonts(s);
                 delete s;
@@ -1264,7 +1448,39 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }  // namespace
 
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
+    // DirectShow and Media Foundation are both COM based, and neither does its
+    // own apartment setup. Without this the very first CoCreateInstance fails
+    // with CO_E_NOTINITIALIZED and the decode test reports that it cannot open
+    // any file at all. STA is what DirectShow expects; the Media Foundation
+    // source reader is happy either way.
+    const HRESULT comInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    // An optional media path may be given on the command line. It selects the
+    // decode test, loads the file and starts the default method, which is what
+    // makes the tool scriptable and what the automated checks drive. With no
+    // argument the app opens on the capability viewer as usual.
+    (void)cmdLine;
+    std::wstring startupFile;
+    int startupMethod = -1;
+    {
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        if (argv) {
+            // Accepted forms:  <file>   |   <method> <file>
+            // where <method> is 0..5, matching the sidebar order.
+            int first = 1;
+            if (argc >= 3) {
+                wchar_t* end = nullptr;
+                const long v = wcstol(argv[1], &end, 10);
+                if (end && *end == 0 && v >= 0 && v < 6) {
+                    startupMethod = static_cast<int>(v);
+                    first = 2;
+                }
+            }
+            if (argc > first) startupFile = argv[first];
+            LocalFree(argv);
+        }
+    }
     INITCOMMONCONTROLSEX icc = {};
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES;
@@ -1293,6 +1509,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
                                 dpi::scale(1140), dpi::scale(760),
                                 nullptr, nullptr, instance, nullptr);
     if (!hwnd) return 1;
+
+    // A path on the command line switches to the decode test and starts it.
+    // This happens after CreateWindow so the child surfaces exist; loading the
+    // file goes through the same call the "打开文件" button uses.
+    if (!startupFile.empty()) {
+        AppState* s = state(hwnd);
+        if (s) {
+            selectTool(hwnd, ToolKind::DecodeTest);
+            if (s->decoder) {
+                if (startupMethod >= 0) {
+                    s->decoder->setMethod(static_cast<decode::Method>(startupMethod));
+                    ui::sectionListSetSelection(s->sectionList, startupMethod);
+                }
+                s->decoder->setFile(startupFile);
+                std::wstring base = startupFile;
+                const size_t slash = base.find_last_of(L"\\/");
+                if (slash != std::wstring::npos) base.erase(0, slash + 1);
+                SetWindowTextW(hwnd, (std::wstring(kWindowTitle) + L" - " + base).c_str());
+                s->decoder->start();
+                updateStatus(hwnd);
+            }
+        }
+    }
 
     // Fine-tune to the monitor the window landed on.
     theme::init(dpi::queryWindowDpi(hwnd));
@@ -1357,6 +1596,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
                 s->fpsWindowStart = now;
                 updateStatus(hwnd);
             }
+        } else if (s && s->tool == ToolKind::DecodeTest && s->decoder) {
+            // The decode test advances on its own schedule: Media Foundation is
+            // pull-based and needs a frame asked for, DirectShow only needs its
+            // progress read. Either way the loop keeps spinning, so a short sleep
+            // keeps this from eating a core the way the driver test deliberately
+            // does.
+            s->decoder->tick();
+            const std::wstring text = s->decoder->statusText();
+            if (text != s->lastDecodeStatus) {
+                s->lastDecodeStatus = text;
+                updateStatus(hwnd);
+            }
+            InvalidateRect(hwnd, &s->logRect, FALSE);
+            Sleep(8);
         } else {
             // Idle: wait for messages without burning CPU.
             GetMessageW(&msg, nullptr, 0, 0);
@@ -1365,5 +1618,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
             DispatchMessageW(&msg);
         }
     }
+    if (SUCCEEDED(comInit)) CoUninitialize();
     return static_cast<int>(msg.wParam);
 }
