@@ -39,6 +39,28 @@
 
 namespace {
 
+// The about box is the one place the repository facts live, so they are kept
+// together here rather than sprinkled through the drawing code.
+const wchar_t kAppVersion[] = L"1.0.0";
+const wchar_t kAppRepo[] = L"github.com/moze30/tux-tools";
+const wchar_t kAppRepoUrl[] = L"https://github.com/moze30/tux-tools";
+const wchar_t kAppAuthor[] = L"moze30";
+const wchar_t kAppLicense[] = L"GPL-3.0";
+const wchar_t kAppSummary[] = L"通过 Windows 图形 API 查看驱动能力、测试驱动性能，并对比系统各条视频解码路径。";
+
+// Credited because their content is what the tools draw: the driver test ports
+// these demos rather than inventing its own scenes, and the capability viewer
+// reports the same properties these projects collect.
+struct Credit { const wchar_t* name; const wchar_t* note; };
+const Credit kCredits[] = {
+    {L"VulkanCapsViewer",     L"Sascha Willems · 驱动能力查看器参考"},
+    {L"glCapsViewer",         L"Sascha Willems · 驱动能力查看器参考"},
+    {L"Vulkan-Tools (vkcube)", L"Khronos · Vulkan 测试场景与纹理，Apache-2.0"},
+    {L"glxgears",             L"Brian Paul · OpenGL 测试场景，MIT"},
+    {L"DSMF-Decode-Test",     L"解码测试的解码核心，GPL-3.0"},
+};
+const int kCreditCount = static_cast<int>(sizeof(kCredits) / sizeof(kCredits[0]));
+
 const wchar_t kWindowClass[] = L"TuxToolsWindow";
 const wchar_t kWindowTitle[] = L"Tux-Tools";
 const wchar_t kBrandName[] = L"Tux-Tools";
@@ -133,6 +155,15 @@ struct AppState {
     RECT openButtonRect = {};
     RECT videoRect = {};
     RECT logRect = {};
+
+    // The about box is an in-window overlay rather than a second top-level
+    // window: everything else here is drawn by hand, and an overlay keeps it
+    // that way without a dialog resource or a nested message loop.
+    bool aboutVisible = false;
+    bool aboutCloseHot = false;
+    bool aboutLinkHot = false;
+    RECT aboutCloseRect = {};
+    RECT aboutLinkRect = {};
 
     int apiHot = -1;
     int sectionHot = -1;
@@ -240,6 +271,7 @@ void stopRender(HWND hwnd);
 
 void showToolMenu(HWND hwnd);
 void selectTool(HWND hwnd, ToolKind tool);
+void setAboutVisible(HWND hwnd, bool visible);
 
 
 // --- Driver test tool -------------------------------------------------------
@@ -491,7 +523,7 @@ void updateValueList(HWND hwnd) {
 
 void updateStatus(HWND hwnd) {
     AppState* s = state(hwnd);
-    if (!s) return;
+    if (!s || !s->status) return;
     if (s->tool == ToolKind::DriverTest) {
         std::wstring text = s->renderDeviceInfo;
         if (s->renderRunning && s->currentFps > 0.0) {
@@ -529,6 +561,8 @@ void showToolMenu(HWND hwnd) {
     AppendMenuW(menu, capsFlags, 1, L"驱动能力查看器");
     AppendMenuW(menu, testFlags, 2, L"驱动测试");
     AppendMenuW(menu, decodeFlags, 3, L"解码测试");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 4, L"关于 Tux-Tools...");
 
     RECT r = s->toolButtonRect;
     POINT pt = {r.left, r.bottom};
@@ -540,6 +574,9 @@ void showToolMenu(HWND hwnd) {
     if (cmd == 1) selectTool(hwnd, ToolKind::DriverCaps);
     else if (cmd == 2) selectTool(hwnd, ToolKind::DriverTest);
     else if (cmd == 3) selectTool(hwnd, ToolKind::DecodeTest);
+    else if (cmd == 4) {
+        setAboutVisible(hwnd, true);
+    }
 }
 
 void selectTool(HWND hwnd, ToolKind tool) {
@@ -737,6 +774,15 @@ void layoutChildren(HWND hwnd) {
 void updateToolVisibility(HWND hwnd) {
     AppState* s = state(hwnd);
     if (!s) return;
+    // While the about overlay is up its card is drawn into the parent window,
+    // so nothing may be shown over it.
+    if (s->aboutVisible) {
+        ShowWindow(s->valueList, SW_HIDE);
+        ShowWindow(s->renderHost, SW_HIDE);
+        if (s->decoder) s->decoder->show(false);
+        return;
+    }
+
     bool test = s->tool == ToolKind::DriverTest;
     bool decodeTool = s->tool == ToolKind::DecodeTest;
     ShowWindow(s->valueList, (test || decodeTool) ? SW_HIDE : SW_SHOW);
@@ -983,6 +1029,200 @@ void paintStatusBar(HWND hwnd, HDC dc) {
     drawText(dc, L"驱动信息已就绪", textRc, theme::kStatusText, s->font);
 }
 
+// --- about box --------------------------------------------------------------
+
+// A dimming wash over the whole client area. AlphaBlend comes from msimg32,
+// which ships with Windows, so this costs nothing at install time.
+void dimClient(HDC dc, const RECT& client) {
+    HDC memDc = CreateCompatibleDC(dc);
+    HBITMAP bitmap = CreateCompatibleBitmap(dc, client.right, client.bottom);
+    HGDIOBJ oldBitmap = SelectObject(memDc, bitmap);
+
+    RECT rc = client;
+    fillRect(memDc, rc, RGB(0x10, 0x14, 0x1A));
+
+    BLENDFUNCTION blend = {};
+    blend.BlendOp = AC_SRC_OVER;
+    blend.SourceConstantAlpha = 120;
+    AlphaBlend(dc, client.left, client.top, client.right, client.bottom,
+               memDc, 0, 0, client.right, client.bottom, blend);
+
+    SelectObject(memDc, oldBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memDc);
+}
+
+// The overlay is drawn into the parent window, but the sidebar list, the value
+// table and the status bar are separate child windows and are composited on top
+// of it. They have to go away while it is up, or the card ends up underneath
+// them. Only the ones this shell owns are touched; the decode test and the
+// render host manage their own visibility.
+void setAboutVisible(HWND hwnd, bool visible) {
+    AppState* s = state(hwnd);
+    if (!s) return;
+    s->aboutVisible = visible;
+    s->aboutCloseHot = false;
+    s->aboutLinkHot = false;
+
+    const int show = visible ? SW_HIDE : SW_SHOW;
+    if (s->sectionList) ShowWindow(s->sectionList, show);
+    // The search box and the status bar are child windows too, and a child is
+    // composited by the system rather than drawn into our DC, so the dimming
+    // wash cannot reach them. They step aside for the duration.
+    if (s->search) ShowWindow(s->search, show);
+    if (s->status) ShowWindow(s->status, show);
+    // The render host and the decoder video surface are child windows as well,
+    // and both sit exactly where the card goes. They have to go away when it
+    // opens, not only when it closes.
+    if (s->renderHost) ShowWindow(s->renderHost, SW_HIDE);
+    if (s->decoder) s->decoder->show(false);
+    if (s->valueList) {
+        // The decode test keeps the value list hidden regardless, so restoring
+        // it blindly would put an empty table on screen.
+        const bool wanted = !visible && s->tool != ToolKind::DriverTest &&
+                            s->tool != ToolKind::DecodeTest;
+        ShowWindow(s->valueList, wanted ? SW_SHOW : SW_HIDE);
+    }
+    if (!visible && s->renderHost) {
+        ShowWindow(s->renderHost, s->tool == ToolKind::DriverTest ? SW_SHOW : SW_HIDE);
+    }
+    if (!visible && s->decoder) s->decoder->show(s->tool == ToolKind::DecodeTest);
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+void openRepository() {
+    ShellExecuteW(nullptr, L"open", kAppRepoUrl, nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+// Draws the card and records the hit rectangles for the close button and the
+// repository link, which is what makes the overlay interactive.
+void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
+    AppState* s = state(hwnd);
+    if (!s || !s->aboutVisible) return;
+
+    dimClient(dc, client);
+
+    const int cardW = dpi::scale(560);
+    const int cardH = dpi::scale(432);
+    RECT card = {(client.right - cardW) / 2, (client.bottom - cardH) / 2,
+                 (client.right - cardW) / 2 + cardW,
+                 (client.bottom - cardH) / 2 + cardH};
+    if (card.top < 0) { card.top = dpi::scale(8); card.bottom = card.top + cardH; }
+
+    // Card with a soft shadow, then the accent stripe down the left edge that
+    // ties it to the top bar.
+    RECT shadow = card;
+    OffsetRect(&shadow, dpi::scale(3), dpi::scale(3));
+    fillRoundRect(dc, shadow, theme::kRadiusCard, RGB(0xC8, 0xCC, 0xD2));
+    fillRoundRect(dc, card, theme::kRadiusCard, RGB(0xFF, 0xFF, 0xFF));
+
+    const int pad = dpi::scale(24);
+    int y = card.top + pad;
+
+    // Header: logo, product name, version.
+    const int logoSz = dpi::scale(44);
+    if (s->logo) {
+        DrawIconEx(dc, card.left + pad, y, s->logo, logoSz, logoSz, 0, nullptr, DI_NORMAL);
+    }
+    RECT nameRc = {card.left + pad + logoSz + dpi::scale(14), y,
+                   card.right - pad, y + logoSz / 2};
+    drawText(dc, kBrandName, nameRc, theme::kPageTitle, s->titleFont);
+    RECT verRc = {nameRc.left, y + logoSz / 2, nameRc.right, y + logoSz};
+    drawText(dc, std::wstring(L"版本 ") + kAppVersion + L"  ·  " + kAppLicense,
+             verRc, theme::kPageSubtitle, s->font);
+
+    // Close button, top right of the card.
+    const int closeSz = dpi::scale(28);
+    s->aboutCloseRect = {card.right - pad - closeSz, card.top + pad,
+                         card.right - pad, card.top + pad + closeSz};
+    if (s->aboutCloseHot) {
+        fillRoundRect(dc, s->aboutCloseRect, theme::kRadiusControl, theme::kNavHover);
+    }
+    {
+        const int cx = (s->aboutCloseRect.left + s->aboutCloseRect.right) / 2;
+        const int cy = (s->aboutCloseRect.top + s->aboutCloseRect.bottom) / 2;
+        const int half = dpi::scale(5);
+        HPEN pen = CreatePen(PS_SOLID, dpi::scale(1), theme::kSidebarMuted);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        MoveToEx(dc, cx - half, cy - half, nullptr);
+        LineTo(dc, cx + half + 1, cy + half + 1);
+        MoveToEx(dc, cx + half, cy - half, nullptr);
+        LineTo(dc, cx - half - 1, cy + half + 1);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
+
+    y += logoSz + dpi::scale(16);
+    {
+        RECT line = {card.left + pad, y, card.right - pad, y + 1};
+        fillRect(dc, line, theme::kDivider);
+    }
+    y += dpi::scale(16);
+
+    // Summary.
+    {
+        RECT r = {card.left + pad, y, card.right - pad, y + dpi::scale(44)};
+        drawText(dc, kAppSummary, r, theme::kTableText, s->font,
+                 DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+        y += dpi::scale(52);
+    }
+
+    // Key/value rows: the label column is fixed so the values line up.
+    const int labelW = dpi::scale(76);
+    const int rowH = dpi::scale(24);
+    const auto row = [&](const wchar_t* label, const std::wstring& value,
+                         COLORREF valueColour, HFONT valueFont) {
+        RECT lr = {card.left + pad, y, card.left + pad + labelW, y + rowH};
+        drawText(dc, label, lr, theme::kPageSubtitle, s->font);
+        RECT vr = {lr.right, y, card.right - pad, y + rowH};
+        drawText(dc, value, vr, valueColour, valueFont);
+        y += rowH;
+    };
+
+    row(L"仓库", kAppRepo, theme::kAccentBorder, s->font);
+    row(L"作者", kAppAuthor,
+        theme::kTableText, s->font);
+    row(L"许可证", kAppLicense, theme::kTableText, s->font);
+
+    // The link is the repository row; remember where it went so a click opens
+    // it. Hovering underlines it, which is the only affordance available
+    // without pulling the mouse cursor ourselves.
+    s->aboutLinkRect = {card.left + pad + labelW, y - rowH * 3, card.right - pad,
+                        y - rowH * 2};
+    if (s->aboutLinkHot) {
+        HGDIOBJ oldPen = SelectObject(
+            dc, CreatePen(PS_SOLID, dpi::scale(1), theme::kAccentBorder));
+        int uy = s->aboutLinkRect.bottom - dpi::scale(4);
+        drawText(dc, kAppRepo, s->aboutLinkRect, theme::kAccentBorder, s->font);
+        MoveToEx(dc, s->aboutLinkRect.left, uy, nullptr);
+        LineTo(dc, s->aboutLinkRect.left + dpi::scale(150), uy);
+        DeleteObject(SelectObject(dc, oldPen));
+    }
+
+    y += dpi::scale(14);
+    {
+        RECT line = {card.left + pad, y, card.right - pad, y + 1};
+        fillRect(dc, line, theme::kDivider);
+    }
+    y += dpi::scale(14);
+
+    // Credits.
+    {
+        RECT hr = {card.left + pad, y, card.right - pad, y + dpi::scale(20)};
+        drawText(dc, L"鸣谢", hr, theme::kPageTitle, s->boldFont);
+        y += dpi::scale(24);
+    }
+    for (int i = 0; i < kCreditCount; ++i) {
+        if (y + dpi::scale(30) > card.bottom - dpi::scale(12)) break;
+        RECT nr = {card.left + pad, y, card.left + pad + dpi::scale(160), y + dpi::scale(18)};
+        drawText(dc, kCredits[i].name, nr, theme::kTableText, s->boldFont,
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        RECT dr = {nr.right + dpi::scale(8), y, card.right - pad, y + dpi::scale(18)};
+        drawText(dc, kCredits[i].note, dr, theme::kPageSubtitle, s->font);
+        y += dpi::scale(22);
+    }
+}
+
 void createFonts(AppState* s) {
     const wchar_t* uiFont = L"Segoe UI Variable Text";
     const wchar_t* displayFont = L"Segoe UI Variable Display";
@@ -1216,6 +1456,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             bool changed = false;
 
+            if (s->aboutVisible) {
+                const bool closeHot = PtInRect(&s->aboutCloseRect, pt) != 0;
+                const bool linkHot = PtInRect(&s->aboutLinkRect, pt) != 0;
+                if (closeHot != s->aboutCloseHot || linkHot != s->aboutLinkHot) {
+                    s->aboutCloseHot = closeHot;
+                    s->aboutLinkHot = linkHot;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+
             int caption = captionButtonFromPoint(hwnd, pt);
             if (caption != s->captionHot) {
                 s->captionHot = caption;
@@ -1266,7 +1517,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         case WM_MOUSELEAVE:
             if (s && (s->apiHot != -1 || s->captionHot != kCaptionNone || s->toolHot ||
-                      s->runButtonHot)) {
+                      s->runButtonHot || s->aboutCloseHot || s->aboutLinkHot)) {
+                s->aboutCloseHot = false;
+                s->aboutLinkHot = false;
                 s->apiHot = -1;
                 s->captionHot = kCaptionNone;
                 s->toolHot = false;
@@ -1278,9 +1531,32 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 InvalidateRect(hwnd, &sidebarHeader, FALSE);
             }
             return 0;
+        case WM_KEYDOWN: {
+            if (!s) return 0;
+            // F1 opens the about box and Esc dismisses it; both are also what a
+            // keyboard user would reach for without a mouse.
+            if (wParam == VK_F1) {
+                setAboutVisible(hwnd, true);
+                return 0;
+            }
+            if (wParam == VK_ESCAPE && s->aboutVisible) {
+                setAboutVisible(hwnd, false);
+                return 0;
+            }
+            break;
+        }
         case WM_LBUTTONDOWN: {
             if (!s) return 0;
             POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            // The about overlay is modal: while it is up it swallows every
+            // press, so nothing behind it can be operated by accident.
+            if (s->aboutVisible) {
+                if (PtInRect(&s->aboutLinkRect, pt)) openRepository();
+                else if (!PtInRect(&s->aboutCloseRect, pt)) {
+                    setAboutVisible(hwnd, false);
+                }
+                return 0;
+            }
             int caption = captionButtonFromPoint(hwnd, pt);
             if (caption != kCaptionNone) {
                 s->captionPressed = caption;
@@ -1326,6 +1602,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         case WM_LBUTTONUP: {
             if (!s) return 0;
+            if (s->aboutVisible) {
+                POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                if (PtInRect(&s->aboutCloseRect, pt)) {
+                    setAboutVisible(hwnd, false);
+                }
+                return 0;
+            }
             if (s->openButtonPressed) {
                 s->openButtonPressed = false;
                 ReleaseCapture();
@@ -1417,6 +1700,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             paintSidebarHeader(hwnd, memDc);
             paintTopBar(hwnd, memDc, rc);
             paintStatusBar(hwnd, memDc);
+            paintAbout(hwnd, memDc, rc);
 
             BitBlt(dc, 0, 0, rc.right, rc.bottom, memDc, 0, 0, SRCCOPY);
             SelectObject(memDc, oldBitmap);
@@ -1606,9 +1890,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
             const std::wstring text = s->decoder->statusText();
             if (text != s->lastDecodeStatus) {
                 s->lastDecodeStatus = text;
-                updateStatus(hwnd);
+                if (!s->aboutVisible) updateStatus(hwnd);
             }
-            InvalidateRect(hwnd, &s->logRect, FALSE);
+            // While the about overlay is up it owns the client area, so the log
+            // panel must not be repainted underneath it; a partial invalidate
+            // would redraw just that rectangle and paint over the card.
+            if (!s->aboutVisible) InvalidateRect(hwnd, &s->logRect, FALSE);
             Sleep(8);
         } else {
             // Idle: wait for messages without burning CPU.

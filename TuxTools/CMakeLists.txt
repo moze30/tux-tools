@@ -84,7 +84,10 @@ target_compile_definitions(TuxTools PRIVATE
     $<$<COMPILE_LANGUAGE:C>:_WIN32_WINNT=0x0601>
 )
 
+# msimg32 provides AlphaBlend, used to dim the client area behind the about
+# overlay. It is a Windows component.
 target_link_libraries(TuxTools PRIVATE
+    msimg32
     comctl32
     gdi32
     opengl32
