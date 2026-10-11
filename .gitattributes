@@ -1,0 +1,15 @@
+# 统一按 LF 存进仓库。
+#
+# 为什么需要这个：本机 Windows 的 git 配置是 core.autocrlf=true，
+# 而开发和构建都在 Linux 容器里。没有这条规则时，谁在哪台机器上改文件、
+# 谁的行尾风格就会混进仓库 —— 表现为「整个文件都变了」的伪 diff。
+# 把 text 显式设成 LF 之后，不管在哪个平台 checkout/commit，仓库里永远是 LF。
+
+* text=auto eol=lf
+
+# 二进制文件不要动（显式声明，避免被当成文本处理）
+*.ico  binary
+*.png  binary
+*.gif  binary
+*.exe  binary
+*.dll  binary

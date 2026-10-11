@@ -1,0 +1,36 @@
+# ============================================================
+#  Tux-Tools — 提交用忽略规则
+#  只收「源码 + 资源 + 文档」，构建产物与临时文件一律不进仓库。
+# ============================================================
+
+# ---- 构建产物 / CMake 缓存 ----
+build/
+build-win/
+build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.ninja
+.ninja_deps
+.ninja_log
+
+# ---- 编译中间文件与可执行文件 ----
+*.obj
+*.o
+*.a
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.exe
+*.dll
+
+# ---- 诊断工具：只留源码，exe 是产物 ----
+_diag/*.exe
+
+# ---- 编辑器 / 系统杂项 ----
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store
