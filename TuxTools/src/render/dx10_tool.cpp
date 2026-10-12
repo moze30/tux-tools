@@ -36,6 +36,7 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include "i18n.h"
 
 namespace render {
 
@@ -229,7 +230,7 @@ public:
     void shutdown() override;
     std::wstring deviceInfo() const override { return deviceInfo_; }
     std::wstring failureReason() const override {
-        return failureReason_.empty() ? std::wstring(L"未知原因") : failureReason_;
+        return failureReason_.empty() ? std::wstring(i18n::tr(L"未知原因")) : failureReason_;
     }
 
 
@@ -331,11 +332,11 @@ bool Dx10Tool::createDevice(HWND host) {
             &desc, &swapChain_, &device_);
     }
     if (FAILED(hr)) {
-        applog::writeHresult(L"Direct3D 10：创建设备与交换链（硬件与 WARP 均失败）", hr);
+        applog::writeHresult(i18n::tr(L"Direct3D 10：创建设备与交换链（硬件与 WARP 均失败）"), hr);
         return false;
     }
-    applog::write(L"Direct3D 10：创建设备成功（%ls）",
-                  used == D3D10_DRIVER_TYPE_WARP ? L"WARP" : L"硬件");
+    applog::write(i18n::tr(L"Direct3D 10：创建设备成功（%ls）"),
+                  used == D3D10_DRIVER_TYPE_WARP ? L"WARP" : i18n::tr(L"硬件"));
 
     std::wstring adapterName = L"(unknown adapter)";
     IDXGIDevice* dxgiDevice = nullptr;
@@ -382,10 +383,10 @@ bool Dx10Tool::createShaders() {
     // final conjunction - which reports nothing about which one it was.
     HRESULT shaderHr = device_->CreateVertexShader(vsBlob->GetBufferPointer(),
                                                     vsBlob->GetBufferSize(), &vs_);
-    if (FAILED(shaderHr)) applog::writeHresult(L"Direct3D 10：创建顶点着色器", shaderHr);
+    if (FAILED(shaderHr)) applog::writeHresult(i18n::tr(L"Direct3D 10：创建顶点着色器"), shaderHr);
     shaderHr = device_->CreatePixelShader(psBlob->GetBufferPointer(),
                                           psBlob->GetBufferSize(), &ps_);
-    if (FAILED(shaderHr)) applog::writeHresult(L"Direct3D 10：创建像素着色器", shaderHr);
+    if (FAILED(shaderHr)) applog::writeHresult(i18n::tr(L"Direct3D 10：创建像素着色器"), shaderHr);
 
     D3D10_INPUT_ELEMENT_DESC layout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
@@ -445,17 +446,17 @@ bool Dx10Tool::createGeometry() {
     // Each body is reported as it is uploaded. On a translation layer a crash
     // here would otherwise leave the log's last line several calls back, and
     // with four meshes that is a wide space to search.
-    if (!uploadMesh(planet, frame_)) { applog::write(L"Direct3D 10：上传球体失败"); return false; }
-    applog::write(L"Direct3D 10：  球体 %u 顶点 %u 索引",
+    if (!uploadMesh(planet, frame_)) { applog::write(i18n::tr(L"Direct3D 10：上传球体失败")); return false; }
+    applog::write(i18n::tr(L"Direct3D 10：  球体 %u 顶点 %u 索引"),
                   static_cast<unsigned>(planet.vertices.size()), planet.indexCount());
-    if (!uploadMesh(ring, panel_)) { applog::write(L"Direct3D 10：上传圆环失败"); return false; }
-    applog::write(L"Direct3D 10：  圆环 %u 顶点 %u 索引",
+    if (!uploadMesh(ring, panel_)) { applog::write(i18n::tr(L"Direct3D 10：上传圆环失败")); return false; }
+    applog::write(i18n::tr(L"Direct3D 10：  圆环 %u 顶点 %u 索引"),
                   static_cast<unsigned>(ring.vertices.size()), ring.indexCount());
-    if (!uploadMesh(moon, shuttle_)) { applog::write(L"Direct3D 10：上传卫星失败"); return false; }
-    applog::write(L"Direct3D 10：  卫星 %u 顶点 %u 索引",
+    if (!uploadMesh(moon, shuttle_)) { applog::write(i18n::tr(L"Direct3D 10：上传卫星失败")); return false; }
+    applog::write(i18n::tr(L"Direct3D 10：  卫星 %u 顶点 %u 索引"),
                   static_cast<unsigned>(moon.vertices.size()), moon.indexCount());
-    if (!uploadMesh(billboard, stars_)) { applog::write(L"Direct3D 10：上传公告板失败"); return false; }
-    applog::write(L"Direct3D 10：  公告板 %u 顶点 %u 索引",
+    if (!uploadMesh(billboard, stars_)) { applog::write(i18n::tr(L"Direct3D 10：上传公告板失败")); return false; }
+    applog::write(i18n::tr(L"Direct3D 10：  公告板 %u 顶点 %u 索引"),
                   static_cast<unsigned>(billboard.vertices.size()), billboard.indexCount());
     return true;
 }
@@ -466,13 +467,13 @@ bool Dx10Tool::createTextures() {
     // onto. The ring's structure runs across v, which is the one direction a
     // viewer does not read as a repeating tile.
     const Texture globe = makeSaturnPlanetTexture(512);
-    applog::write(L"Direct3D 10：  行星纹理 %ux%u，%u 字节", globe.width, globe.height,
+    applog::write(i18n::tr(L"Direct3D 10：  行星纹理 %ux%u，%u 字节"), globe.width, globe.height,
                   static_cast<unsigned>(globe.pixels.size()));
     const Texture rings = makeSaturnRingTexture(512);
-    applog::write(L"Direct3D 10：  光环纹理 %ux%u，%u 字节", rings.width, rings.height,
+    applog::write(i18n::tr(L"Direct3D 10：  光环纹理 %ux%u，%u 字节"), rings.width, rings.height,
                   static_cast<unsigned>(rings.pixels.size()));
     const Texture star = makeStarSprite(64);
-    applog::write(L"Direct3D 10：  星点纹理 %ux%u，%u 字节", star.width, star.height,
+    applog::write(i18n::tr(L"Direct3D 10：  星点纹理 %ux%u，%u 字节"), star.width, star.height,
                   static_cast<unsigned>(star.pixels.size()));
 
     const Texture* sources[3] = {&globe, &rings, &star};
@@ -509,8 +510,7 @@ bool Dx10Tool::createTextures() {
         const size_t needed =
             static_cast<size_t>(source.width) * source.height * 4;
         if (source.pixels.size() < needed) {
-            applog::write(L"Direct3D 10：第 %d 张纹理数据不足"
-                          L"（需要 %u 字节，实际 %u 字节）",
+            applog::write(i18n::tr(L"Direct3D 10：第 %d 张纹理数据不足（需要 %u 字节，实际 %u 字节）"),
                           i, static_cast<unsigned>(needed),
                           static_cast<unsigned>(source.pixels.size()));
             return false;
@@ -518,7 +518,7 @@ bool Dx10Tool::createTextures() {
 
         ID3D10Texture2D* texture = nullptr;
         if (FAILED(device_->CreateTexture2D(&desc, &init, &texture))) {
-            applog::write(L"Direct3D 10：上传第 %d 张纹理失败（%dx%d）", i,
+            applog::write(i18n::tr(L"Direct3D 10：上传第 %d 张纹理失败（%dx%d）"), i,
                           source.width, source.height);
             return false;
         }
@@ -526,10 +526,10 @@ bool Dx10Tool::createTextures() {
             device_->CreateShaderResourceView(texture, nullptr, targets[i]);
         texture->Release();
         if (FAILED(hr)) {
-            applog::writeHresult(L"Direct3D 10：为一纹理创建视图", hr);
+            applog::writeHresult(i18n::tr(L"Direct3D 10：为一纹理创建视图"), hr);
             return false;
         }
-        applog::write(L"Direct3D 10：  第 %d 张纹理已上传（%dx%d）", i, source.width,
+        applog::write(i18n::tr(L"Direct3D 10：  第 %d 张纹理已上传（%dx%d）"), i, source.width,
                       source.height);
     }
 
@@ -650,26 +650,26 @@ bool Dx10Tool::createShadowMap() {
 }
 
 bool Dx10Tool::init(HWND host) {
-    applog::write(L"Direct3D 10：开始初始化");
+    applog::write(i18n::tr(L"Direct3D 10：开始初始化"));
     if (!createDevice(host)) {
-        failureReason_ = L"无法创建设备";
+        failureReason_ = i18n::tr(L"无法创建设备");
         return false;
     }
-    applog::write(L"Direct3D 10：设备已建立，%ls", deviceInfo_.c_str());
-    if (!createShaders()) { failureReason_ = L"无法编译着色器"; return false; }
-    applog::write(L"Direct3D 10：着色器已编译");
-    if (!createGeometry()) { failureReason_ = L"无法创建几何缓冲"; return false; }
-    applog::write(L"Direct3D 10：几何缓冲已创建");
-    if (!createTextures()) { failureReason_ = L"无法创建纹理"; return false; }
-    applog::write(L"Direct3D 10：纹理已创建");
-    if (!createStates()) { failureReason_ = L"无法创建渲染状态"; return false; }
-    applog::write(L"Direct3D 10：渲染状态已创建");
-    if (!createShadowMap()) { failureReason_ = L"无法创建阴影贴图"; return false; }
-    applog::write(L"Direct3D 10：阴影贴图已创建");
+    applog::write(i18n::tr(L"Direct3D 10：设备已建立，%ls"), deviceInfo_.c_str());
+    if (!createShaders()) { failureReason_ = i18n::tr(L"无法编译着色器"); return false; }
+    applog::write(i18n::tr(L"Direct3D 10：着色器已编译"));
+    if (!createGeometry()) { failureReason_ = i18n::tr(L"无法创建几何缓冲"); return false; }
+    applog::write(i18n::tr(L"Direct3D 10：几何缓冲已创建"));
+    if (!createTextures()) { failureReason_ = i18n::tr(L"无法创建纹理"); return false; }
+    applog::write(i18n::tr(L"Direct3D 10：纹理已创建"));
+    if (!createStates()) { failureReason_ = i18n::tr(L"无法创建渲染状态"); return false; }
+    applog::write(i18n::tr(L"Direct3D 10：渲染状态已创建"));
+    if (!createShadowMap()) { failureReason_ = i18n::tr(L"无法创建阴影贴图"); return false; }
+    applog::write(i18n::tr(L"Direct3D 10：阴影贴图已创建"));
     createSizeDependent();
-    applog::write(L"Direct3D 10：尺寸相关资源已创建");
-    if (!rtv_) { failureReason_ = L"渲染目标视图为空"; return false; }
-    applog::write(L"Direct3D 10：初始化完成");
+    applog::write(i18n::tr(L"Direct3D 10：尺寸相关资源已创建"));
+    if (!rtv_) { failureReason_ = i18n::tr(L"渲染目标视图为空"); return false; }
+    applog::write(i18n::tr(L"Direct3D 10：初始化完成"));
     return true;
 }
 

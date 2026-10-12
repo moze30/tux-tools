@@ -38,6 +38,7 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include "i18n.h"
 
 namespace render {
 
@@ -345,7 +346,7 @@ public:
     void shutdown() override;
     std::wstring deviceInfo() const override { return deviceInfo_; }
     std::wstring failureReason() const override {
-        return failureReason_.empty() ? std::wstring(L"未知原因") : failureReason_;
+        return failureReason_.empty() ? std::wstring(i18n::tr(L"未知原因")) : failureReason_;
     }
 
 private:
@@ -407,7 +408,7 @@ bool Dx12Tool::createDevice(HWND host) {
     HRESULT hrFactory = CreateDXGIFactory1(__uuidof(IDXGIFactory4),
                                            reinterpret_cast<void**>(&factory));
     if (FAILED(hrFactory)) {
-        applog::writeHresult(L"Direct3D 12：CreateDXGIFactory1(IDXGIFactory4)", hrFactory);
+        applog::writeHresult(i18n::tr(L"Direct3D 12：CreateDXGIFactory1(IDXGIFactory4)"), hrFactory);
         return false;
     }
 
@@ -448,20 +449,19 @@ bool Dx12Tool::createDevice(HWND host) {
     const HRESULT hrSwap = factory->CreateSwapChainForHwnd(queue_, host, &scd, nullptr,
                                                            nullptr, &swap1);
     if (FAILED(hrSwap)) {
-        applog::writeHresult(L"Direct3D 12：CreateSwapChainForHwnd（flip 模型）", hrSwap);
+        applog::writeHresult(i18n::tr(L"Direct3D 12：CreateSwapChainForHwnd（flip 模型）"), hrSwap);
         // The window, the same way the Vulkan path reports it. Whatever the
         // translation layer objects to is most likely common to both.
         {
             LONG_PTR style = GetWindowLongPtrW(host, GWL_STYLE);
             HWND parent = GetParent(host);
             HWND root = GetAncestor(host, GA_ROOT);
-            applog::write(L"Direct3D 12：窗口 style=0x%08lX (WS_CHILD=%ls) parent=%p root=%p",
+            applog::write(i18n::tr(L"Direct3D 12：窗口 style=0x%08lX (WS_CHILD=%ls) parent=%p root=%p"),
                           static_cast<unsigned long>(style),
-                          (style & WS_CHILD) ? L"是" : L"否",
+                          (style & WS_CHILD) ? i18n::tr(L"是") : i18n::tr(L"否"),
                           reinterpret_cast<void*>(parent), reinterpret_cast<void*>(root));
         }
-        applog::write(L"Direct3D 12：交换链参数 width=%u height=%u format=RGBA8 "
-                      L"buffers=%d swapeffect=FLIP_DISCARD 适配器=%ls",
+        applog::write(i18n::tr(L"Direct3D 12：交换链参数 width=%u height=%u format=RGBA8 buffers=%d swapeffect=FLIP_DISCARD 适配器=%ls"),
                       scd.Width, scd.Height, kFrameCount, adapterName.c_str());
         factory->Release();
         return false;
@@ -672,7 +672,7 @@ void Dx12Tool::createSizeDependent() {}
 void Dx12Tool::releaseSizeDependent() {}
 
 bool Dx12Tool::init(HWND host) {
-    applog::write(L"Direct3D 12：开始初始化");
+    applog::write(i18n::tr(L"Direct3D 12：开始初始化"));
 
     // The command queue has to exist before the swap chain is created for it.
     D3D12_COMMAND_QUEUE_DESC qd = {};
@@ -682,25 +682,25 @@ bool Dx12Tool::init(HWND host) {
                                    __uuidof(ID3D12Device),
                                    reinterpret_cast<void**>(&device_));
     if (FAILED(hr)) {
-        applog::writeHresult(L"Direct3D 12：D3D12CreateDevice", hr);
-        failureReason_ = L"无法创建 D3D12 设备";
+        applog::writeHresult(i18n::tr(L"Direct3D 12：D3D12CreateDevice"), hr);
+        failureReason_ = i18n::tr(L"无法创建 D3D12 设备");
         return false;
     }
     hr = device_->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue),
                                      reinterpret_cast<void**>(&queue_));
     if (FAILED(hr)) {
-        applog::writeHresult(L"Direct3D 12：CreateCommandQueue", hr);
-        failureReason_ = L"无法创建命令队列";
+        applog::writeHresult(i18n::tr(L"Direct3D 12：CreateCommandQueue"), hr);
+        failureReason_ = i18n::tr(L"无法创建命令队列");
         return false;
     }
-    applog::write(L"Direct3D 12：设备与队列已建立");
+    applog::write(i18n::tr(L"Direct3D 12：设备与队列已建立"));
 
-    if (!createDevice(host)) { failureReason_ = L"无法创建交换链"; return false; }
-    if (!createRootSignature()) { failureReason_ = L"无法创建根签名"; return false; }
-    if (!createPipeline()) { failureReason_ = L"无法创建管线"; return false; }
-    if (!createFrameResources()) { failureReason_ = L"无法创建帧资源"; return false; }
-    if (!createTargets()) { failureReason_ = L"无法创建渲染目标"; return false; }
-    applog::write(L"Direct3D 12：初始化完成");
+    if (!createDevice(host)) { failureReason_ = i18n::tr(L"无法创建交换链"); return false; }
+    if (!createRootSignature()) { failureReason_ = i18n::tr(L"无法创建根签名"); return false; }
+    if (!createPipeline()) { failureReason_ = i18n::tr(L"无法创建管线"); return false; }
+    if (!createFrameResources()) { failureReason_ = i18n::tr(L"无法创建帧资源"); return false; }
+    if (!createTargets()) { failureReason_ = i18n::tr(L"无法创建渲染目标"); return false; }
+    applog::write(i18n::tr(L"Direct3D 12：初始化完成"));
     return true;
 }
 

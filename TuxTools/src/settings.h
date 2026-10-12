@@ -13,6 +13,8 @@
 
 #include <windows.h>
 
+#include <string>
+
 namespace settings {
 
 // Reads the saved preferences and applies them. Call once, before the window is
@@ -27,5 +29,9 @@ void setTextScale(int percent);
 
 // Back to the design size.
 void resetTextScale();
+
+// Saves the interface language choice. The value is written by i18n, which owns
+// the setting; this module only knows where the INI is.
+void saveLanguage(const std::wstring& code);
 
 }  // namespace settings

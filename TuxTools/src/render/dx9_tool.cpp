@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include "i18n.h"
 
 namespace render {
 
@@ -54,7 +55,7 @@ public:
     void shutdown() override;
     std::wstring deviceInfo() const override { return deviceInfo_; }
     std::wstring failureReason() const override {
-        return failureReason_.empty() ? std::wstring(L"未知原因") : failureReason_;
+        return failureReason_.empty() ? std::wstring(i18n::tr(L"未知原因")) : failureReason_;
     }
 
 private:
@@ -107,7 +108,7 @@ bool Dx9Tool::createDevice(HWND host) {
     d3d9_ = Direct3DCreate9(D3D_SDK_VERSION);
     if (!d3d9_) {
         // Direct3DCreate9 returns nothing at all on failure - no object, no code.
-        applog::write(L"Direct3D 9：Direct3DCreate9 返回空（d3d9.dll 存在但无法提供 IDirect3D9）");
+        applog::write(i18n::tr(L"Direct3D 9：Direct3DCreate9 返回空（d3d9.dll 存在但无法提供 IDirect3D9）"));
         return false;
     }
 
@@ -144,10 +145,10 @@ bool Dx9Tool::createDevice(HWND host) {
         // All three vertex processing modes were tried; report the last code,
         // which is the one from software processing and therefore the most
         // meaningful when even that could not find a usable adapter.
-        applog::writeHresult(L"Direct3D 9：CreateDevice（硬件/混合/软件三种顶点处理均失败）", hr);
+        applog::writeHresult(i18n::tr(L"Direct3D 9：CreateDevice（硬件/混合/软件三种顶点处理均失败）"), hr);
         return false;
     }
-    applog::write(L"Direct3D 9：CreateDevice 成功（%ls）", used);
+    applog::write(i18n::tr(L"Direct3D 9：CreateDevice 成功（%ls）"), used);
 
     D3DADAPTER_IDENTIFIER9 id = {};
     if (SUCCEEDED(d3d9_->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &id))) {
@@ -284,16 +285,16 @@ void Dx9Tool::setupLighting() {
 }
 
 bool Dx9Tool::init(HWND host) {
-    applog::write(L"Direct3D 9：开始初始化");
+    applog::write(i18n::tr(L"Direct3D 9：开始初始化"));
     if (!createDevice(host)) {
-        failureReason_ = L"无法创建 D3D9 设备";
+        failureReason_ = i18n::tr(L"无法创建 D3D9 设备");
         return false;
     }
-    applog::write(L"Direct3D 9：设备已建立，%ls", deviceInfo_.c_str());
-    if (!createGeometry()) { failureReason_ = L"无法创建几何缓冲"; return false; }
-    if (!createTextures()) { failureReason_ = L"无法创建纹理"; return false; }
+    applog::write(i18n::tr(L"Direct3D 9：设备已建立，%ls"), deviceInfo_.c_str());
+    if (!createGeometry()) { failureReason_ = i18n::tr(L"无法创建几何缓冲"); return false; }
+    if (!createTextures()) { failureReason_ = i18n::tr(L"无法创建纹理"); return false; }
     setupLighting();
-    applog::write(L"Direct3D 9：初始化完成");
+    applog::write(i18n::tr(L"Direct3D 9：初始化完成"));
     return true;
 }
 

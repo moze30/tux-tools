@@ -32,6 +32,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "i18n.h"
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
@@ -49,7 +50,10 @@ const wchar_t kAppRepo[] = L"github.com/moze30/tux-tools";
 const wchar_t kAppRepoUrl[] = L"https://github.com/moze30/tux-tools";
 const wchar_t kAppAuthor[] = L"moze30";
 const wchar_t kAppLicense[] = L"GPL-3.0";
-const wchar_t kAppSummary[] = L"通过 Windows 图形 API 查看驱动能力、测试驱动性能，并对比系统各条视频解码路径。";
+// Not translated here: a namespace-scope initialiser runs before the language is
+// known, so it would freeze whichever one the process started with. The call is
+// made where the string is drawn instead.
+const wchar_t kAppSummaryZh[] = L"通过 Windows 图形 API 查看驱动能力、测试驱动性能，并对比系统各条视频解码路径。";
 
 // Credited because their content is what the tools draw: the driver test ports
 // these demos rather than inventing its own scenes, and the capability viewer
@@ -80,7 +84,6 @@ const int kCreditCount = static_cast<int>(sizeof(kCredits) / sizeof(kCredits[0])
 const wchar_t kWindowClass[] = L"TuxToolsWindow";
 const wchar_t kWindowTitle[] = L"Tux-Tools";
 const wchar_t kBrandName[] = L"Tux-Tools";
-const std::wstring kToolLabel = L"驱动能力查看器";
 
 #define ID_SEARCH 1002
 #define ID_SECTION_LIST 1003
@@ -161,8 +164,19 @@ enum SettingsItem {
     kSettingsScaleReset,
     kSettingsLog,
     kSettingsPath,
-    kSettingsItemCount
+    // One hit rectangle per switchable language, so a click can be mapped back
+    // to a language by subtracting the first of them. The count is what ties this
+    // to i18n's list: adding a language is one entry there and one here.
+    kSettingsLangFirst,
+    kSettingsLangCount = 2,
+    kSettingsLangLast = kSettingsLangFirst + kSettingsLangCount - 1,
+    kSettingsItemCount = kSettingsLangLast + 1
 };
+
+// The pill count and i18n's language list have to agree: the card lays a pill out
+// per language and maps a click back by index.
+static_assert(i18n::kLanguageCount == kSettingsLangCount,
+              "the settings card and i18n disagree about how many languages exist");
 
 struct AppState {
     Api api = Api::OpenGL;
@@ -336,6 +350,7 @@ viewer::Report& currentReport(AppState* s) {
 }
 
 void updateValueList(HWND hwnd);
+void applyLanguage(HWND hwnd);
 
 void updateStatus(HWND hwnd);
 void updateToolVisibility(HWND hwnd);
@@ -424,7 +439,7 @@ void createRenderHost(HWND hwnd) {
             reinterpret_cast<HMENU>(ID_RENDER_HOST), inst, nullptr);
     }
     if (!host) {
-        applog::write(L"创建渲染宿主窗口失败（错误 %lu）", GetLastError());
+        applog::write(i18n::tr(L"创建渲染宿主窗口失败（错误 %lu）"), GetLastError());
         return;
     }
 
@@ -446,8 +461,8 @@ void createRenderHost(HWND hwnd) {
     s->renderHost = host;
     s->renderHostStale = false;
 
-    applog::write(L"驱动测试：新渲染宿主窗口 %p（%ls）", reinterpret_cast<void*>(host),
-                  host == old ? L"沿用旧窗口" : L"全新窗口");
+    applog::write(i18n::tr(L"驱动测试：新渲染宿主窗口 %p（%ls）"), reinterpret_cast<void*>(host),
+                  host == old ? i18n::tr(L"沿用旧窗口") : i18n::tr(L"全新窗口"));
     ShowWindow(host, s->tool == ToolKind::DriverTest ? SW_SHOW : SW_HIDE);
     if (old) {
         ShowWindow(old, SW_HIDE);
@@ -492,7 +507,7 @@ void ensureRenderer(HWND hwnd) {
     int w = rc.right - rc.left;
     int h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0) {
-        applog::write(L"驱动测试：渲染区尺寸无效（%dx%d），跳过初始化", w, h);
+        applog::write(i18n::tr(L"驱动测试：渲染区尺寸无效（%dx%d），跳过初始化"), w, h);
         return;
     }
 
@@ -512,7 +527,7 @@ void ensureRenderer(HWND hwnd) {
         // say only that the test started and stopped, which is exactly what made
         // the first version of this log useless.
         const std::wstring why = tool->failureReason();
-        applog::write(L"驱动测试：%ls 初始化失败 - %ls", dxApiLabel(s->dxApi),
+        applog::write(i18n::tr(L"驱动测试：%ls 初始化失败 - %ls"), dxApiLabel(s->dxApi),
                       why.c_str());
         delete tool;
         s->renderer = nullptr;
@@ -526,7 +541,7 @@ void ensureRenderer(HWND hwnd) {
         // child window works this code never runs.
         if (!s->detachRenderHost && !s->detachTried) {
             s->detachTried = true;
-            applog::write(L"驱动测试：改用顶层窗口重试 %ls", dxApiLabel(s->dxApi));
+            applog::write(i18n::tr(L"驱动测试：改用顶层窗口重试 %ls"), dxApiLabel(s->dxApi));
             s->detachRenderHost = true;
             // ensureRenderer creates the window itself, at the top of the call.
             ensureRenderer(hwnd);
@@ -534,7 +549,7 @@ void ensureRenderer(HWND hwnd) {
                 // Remember the answer: later backends go straight to a popup
                 // instead of failing once more each.
                 s->detachWorks = true;
-                applog::write(L"驱动测试：顶层窗口可用，后续后端将直接使用");
+                applog::write(i18n::tr(L"驱动测试：顶层窗口可用，后续后端将直接使用"));
             } else {
                 s->detachRenderHost = false;
                 createRenderHost(hwnd);
@@ -542,11 +557,11 @@ void ensureRenderer(HWND hwnd) {
         }
 
         if (s->rendererReady) return;
-        s->renderDeviceInfo = std::wstring(L"无法初始化 ") + dxApiLabel(s->dxApi) +
-                              L"：" + why;
+        s->renderDeviceInfo = std::wstring(i18n::tr(L"无法初始化 ")) + dxApiLabel(s->dxApi) +
+                              i18n::tr(L"：") + why;
         return;
     }
-    applog::write(L"驱动测试：%ls 初始化成功 - %ls", dxApiLabel(s->dxApi),
+    applog::write(i18n::tr(L"驱动测试：%ls 初始化成功 - %ls"), dxApiLabel(s->dxApi),
                   tool->deviceInfo().c_str());
 
     s->renderer = tool;
@@ -569,7 +584,7 @@ void ensureRenderer(HWND hwnd) {
 void startRender(HWND hwnd) {
     {
         AppState* s0 = state(hwnd);
-        if (s0) applog::write(L"驱动测试：开始 %ls", dxApiLabel(s0->dxApi));
+        if (s0) applog::write(i18n::tr(L"驱动测试：开始 %ls"), dxApiLabel(s0->dxApi));
     }
     AppState* s = state(hwnd);
     if (!s) return;
@@ -605,9 +620,9 @@ void startRender(HWND hwnd) {
         // ambiguous between a window that is hidden and one that is behind the
         // window underneath, and these four facts separate them.
         LONG_PTR ex = GetWindowLongPtrW(s->renderHost, GWL_EXSTYLE);
-        applog::write(L"驱动测试：宿主窗口 可见=%ls 置顶=%ls 位置=%ld,%ld 尺寸=%ldx%ld",
-                      IsWindowVisible(s->renderHost) ? L"是" : L"否",
-                      (ex & WS_EX_TOPMOST) ? L"是" : L"否", tl.x, tl.y,
+        applog::write(i18n::tr(L"驱动测试：宿主窗口 可见=%ls 置顶=%ls 位置=%ld,%ld 尺寸=%ldx%ld"),
+                      IsWindowVisible(s->renderHost) ? i18n::tr(L"是") : i18n::tr(L"否"),
+                      (ex & WS_EX_TOPMOST) ? i18n::tr(L"是") : i18n::tr(L"否"), tl.x, tl.y,
                       r2.right - r2.left, r2.bottom - r2.top);
     }
 
@@ -622,7 +637,7 @@ void stopRender(HWND hwnd) {
     if (!s) return;
     // Only worth a line when something was actually running; a stop with nothing
     // to stop happens on every tool switch and would be noise.
-    if (s->renderer || s->renderRunning) applog::write(L"驱动测试：停止");
+    if (s->renderer || s->renderRunning) applog::write(i18n::tr(L"驱动测试：停止"));
     s->renderRunning = false;
     s->currentFps = 0.0;
     s->framesInWindow = 0;
@@ -742,7 +757,7 @@ void updateStatus(HWND hwnd) {
             text = s->decoder->statusText();
             if (text.empty()) text = s->decoder->filePath();
         }
-        if (text.empty()) text = L"选择一种解码方式，打开媒体文件后点击开始";
+        if (text.empty()) text = i18n::tr(L"选择一种解码方式，打开媒体文件后点击开始");
         SetWindowTextW(s->status, text.c_str());
         return;
     }
@@ -775,12 +790,12 @@ void showToolMenu(HWND hwnd) {
     UINT capsFlags = MF_STRING | (s->tool == ToolKind::DriverCaps ? MF_CHECKED : 0);
     UINT testFlags = MF_STRING | (s->tool == ToolKind::DriverTest ? MF_CHECKED : 0);
     UINT decodeFlags = MF_STRING | (s->tool == ToolKind::DecodeTest ? MF_CHECKED : 0);
-    AppendMenuW(menu, capsFlags, kCmdToolCaps, L"驱动能力查看器");
-    AppendMenuW(menu, testFlags, kCmdToolTest, L"驱动测试");
-    AppendMenuW(menu, decodeFlags, kCmdToolDecode, L"解码测试");
+    AppendMenuW(menu, capsFlags, kCmdToolCaps, i18n::tr(L"驱动能力查看器"));
+    AppendMenuW(menu, testFlags, kCmdToolTest, i18n::tr(L"驱动测试"));
+    AppendMenuW(menu, decodeFlags, kCmdToolDecode, i18n::tr(L"解码测试"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kCmdSettings, L"设置...");
-    AppendMenuW(menu, MF_STRING, kCmdAbout, L"关于 Tux-Tools...");
+    AppendMenuW(menu, MF_STRING, kCmdSettings, i18n::tr(L"设置..."));
+    AppendMenuW(menu, MF_STRING, kCmdAbout, i18n::tr(L"关于 Tux-Tools..."));
 
     RECT r = s->toolButtonRect;
     POINT pt = {r.left, r.bottom};
@@ -797,9 +812,9 @@ void selectTool(HWND hwnd, ToolKind tool) {
     if (!s || s->tool == tool) return;
     s->tool = tool;
     switch (tool) {
-        case ToolKind::DriverCaps: applog::write(L"切换到：驱动能力查看器"); break;
-        case ToolKind::DriverTest: applog::write(L"切换到：驱动测试"); break;
-        case ToolKind::DecodeTest: applog::write(L"切换到：解码测试"); break;
+        case ToolKind::DriverCaps: applog::write(i18n::tr(L"切换到：驱动能力查看器")); break;
+        case ToolKind::DriverTest: applog::write(i18n::tr(L"切换到：驱动测试")); break;
+        case ToolKind::DecodeTest: applog::write(i18n::tr(L"切换到：解码测试")); break;
     }
     ui::searchBoxSetText(s->search, L"");
 
@@ -1058,9 +1073,9 @@ void paintTopBar(HWND hwnd, HDC dc, const RECT& client) {
                              : (hot ? RGB(0xF2, 0xF2, 0xF2) : RGB(0xFF, 0xFF, 0xFF));
         fillRoundRect(dc, r, theme::kRadiusControl, fill);
         COLORREF text = RGB(0x21, 0x21, 0x21);
-        std::wstring label = L"驱动能力查看器";
-        if (s->tool == ToolKind::DriverTest) label = L"驱动测试";
-        else if (s->tool == ToolKind::DecodeTest) label = L"解码测试";
+        std::wstring label = i18n::tr(L"驱动能力查看器");
+        if (s->tool == ToolKind::DriverTest) label = i18n::tr(L"驱动测试");
+        else if (s->tool == ToolKind::DecodeTest) label = i18n::tr(L"解码测试");
         RECT textRc = r;
         textRc.left += theme::kSpaceM;
         textRc.right -= theme::kSpaceM;
@@ -1144,14 +1159,14 @@ void paintSidebarHeader(HWND hwnd, HDC dc) {
         RECT heading = {theme::kSpaceL, theme::kTopBarHeight + theme::kSpaceM,
                         theme::kSidebarWidth - theme::kSpaceL,
                         s->glSwitchRect.bottom};
-        drawText(dc, L"图形 API 测试", heading, theme::kPageSubtitle, s->boldFont);
+        drawText(dc, i18n::tr(L"图形 API 测试"), heading, theme::kPageSubtitle, s->boldFont);
         return;
     }
     if (s->tool == ToolKind::DecodeTest) {
         RECT heading = {theme::kSpaceL, theme::kTopBarHeight + theme::kSpaceM,
                         theme::kSidebarWidth - theme::kSpaceL,
                         s->glSwitchRect.bottom};
-        drawText(dc, L"解码方式", heading, theme::kPageSubtitle, s->boldFont);
+        drawText(dc, i18n::tr(L"解码方式"), heading, theme::kPageSubtitle, s->boldFont);
         return;
     }
 
@@ -1185,7 +1200,7 @@ void paintContent(HWND hwnd, HDC dc, const RECT& client) {
                         theme::kTopBarHeight + theme::metric(14),
                         s->runButtonRect.left - theme::kSpaceM,
                         theme::kTopBarHeight + theme::metric(42)};
-        drawText(dc, std::wstring(L"驱动测试 - ") + dxApiLabel(s->dxApi), titleRc,
+        drawText(dc, std::wstring(i18n::tr(L"驱动测试 - ")) + dxApiLabel(s->dxApi), titleRc,
                  theme::kPageTitle, s->titleFont);
 
         // Run / stop button.
@@ -1194,7 +1209,7 @@ void paintContent(HWND hwnd, HDC dc, const RECT& client) {
         COLORREF fill = down ? theme::kAccentBorder
                              : (s->runButtonHot ? theme::kAccentHover : theme::kAccent);
         fillRoundRect(dc, r, theme::kRadiusControl, fill);
-        drawText(dc, s->renderRunning ? L"停止" : L"开始", r, theme::kTopBarText,
+        drawText(dc, s->renderRunning ? i18n::tr(L"停止") : i18n::tr(L"开始"), r, theme::kTopBarText,
                  s->boldFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         RECT line = {theme::kSidebarWidth, theme::kTopBarHeight,
@@ -1208,7 +1223,7 @@ void paintContent(HWND hwnd, HDC dc, const RECT& client) {
                         theme::kTopBarHeight + theme::metric(14),
                         s->openButtonRect.left - theme::kSpaceM,
                         theme::kTopBarHeight + theme::metric(42)};
-        std::wstring title = L"解码测试";
+        std::wstring title = i18n::tr(L"解码测试");
         if (s->decoder) title += std::wstring(L" - ") + decode::methodName(s->decoder->method());
         drawText(dc, title, titleRc, theme::kPageTitle, s->titleFont);
 
@@ -1218,7 +1233,7 @@ void paintContent(HWND hwnd, HDC dc, const RECT& client) {
                               ? theme::kAccentBorder
                               : (s->openButtonHot ? theme::kAccentHover : theme::kAccent);
         fillRoundRect(dc, ob, theme::kRadiusControl, obFill);
-        drawText(dc, L"打开文件", ob, theme::kTopBarText, s->font,
+        drawText(dc, i18n::tr(L"打开文件"), ob, theme::kTopBarText, s->font,
                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         // Run / stop button.
@@ -1228,7 +1243,7 @@ void paintContent(HWND hwnd, HDC dc, const RECT& client) {
                              : (s->runButtonHot ? theme::kAccentHover : theme::kAccent);
         fillRoundRect(dc, r, theme::kRadiusControl, fill);
         const bool running = s->decoder && s->decoder->running();
-        drawText(dc, running ? L"停止" : L"开始", r, theme::kTopBarText,
+        drawText(dc, running ? i18n::tr(L"停止") : i18n::tr(L"开始"), r, theme::kTopBarText,
                  s->boldFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         // The video surface is a child window and paints itself; only the log
@@ -1246,7 +1261,7 @@ void paintContent(HWND hwnd, HDC dc, const RECT& client) {
                     theme::kTopBarHeight + theme::metric(14),
                     client.right - theme::kSpaceXL,
                     theme::kTopBarHeight + theme::metric(42)};
-    std::wstring title = L"属性";
+    std::wstring title = i18n::tr(L"属性");
     if (s) {
         viewer::Report& report = currentReport(s);
         int index = ui::sectionListGetSelection(s->sectionList);
@@ -1271,7 +1286,7 @@ void paintStatusBar(HWND hwnd, HDC dc) {
     fillRoundRect(dc, dot, 4, theme::kAccentHover);
     RECT textRc = {dot.right + theme::kSpaceS, s->statusRect.top,
                    s->statusRect.right - 200, s->statusRect.bottom};
-    drawText(dc, L"驱动信息已就绪", textRc, theme::kStatusText, s->font);
+    drawText(dc, i18n::tr(L"驱动信息已就绪"), textRc, theme::kStatusText, s->font);
 }
 
 // --- about box --------------------------------------------------------------
@@ -1404,7 +1419,7 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
                    card.right - pad, y + logoSz / 2};
     drawText(dc, kBrandName, nameRc, theme::kPageTitle, s->titleFont);
     RECT verRc = {nameRc.left, y + logoSz / 2, nameRc.right, y + logoSz};
-    drawText(dc, std::wstring(L"版本 ") + kAppVersion + L"  ·  " + kAppLicense,
+    drawText(dc, std::wstring(i18n::tr(L"版本 ")) + kAppVersion + L"  ·  " + kAppLicense,
              verRc, theme::kPageSubtitle, s->font);
 
     // Close button, top right of the card.
@@ -1438,7 +1453,7 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
     // Summary.
     {
         RECT r = {card.left + pad, y, card.right - pad, y + theme::zoom(44)};
-        drawText(dc, kAppSummary, r, theme::kTableText, s->font,
+        drawText(dc, i18n::tr(kAppSummaryZh), r, theme::kTableText, s->font,
                  DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
         y += theme::zoom(52);
     }
@@ -1455,10 +1470,10 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
         y += rowH;
     };
 
-    row(L"仓库", kAppRepo, theme::kAccentBorder, s->font);
-    row(L"作者", kAppAuthor,
+    row(i18n::tr(L"仓库"), kAppRepo, theme::kAccentBorder, s->font);
+    row(i18n::tr(L"作者"), kAppAuthor,
         theme::kTableText, s->font);
-    row(L"许可证", kAppLicense, theme::kTableText, s->font);
+    row(i18n::tr(L"许可证"), kAppLicense, theme::kTableText, s->font);
 
     // The link is the repository row; remember where it went so a click opens
     // it. Hovering underlines it, which is the only affordance available
@@ -1487,7 +1502,7 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
     // click target rather than the text alone, which is easier to hit.
     {
         RECT hr = {card.left + pad, y, card.right - pad, y + theme::zoom(20)};
-        drawText(dc, L"鸣谢", hr, theme::kPageTitle, s->boldFont);
+        drawText(dc, i18n::tr(L"鸣谢"), hr, theme::kPageTitle, s->boldFont);
         y += theme::zoom(24);
     }
     for (int i = 0; i < kCreditCount; ++i) {
@@ -1526,16 +1541,20 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
 // A rounded pill button, the shape the settings card uses for its small
 // controls. Drawn like every other control in the shell: a tint when the pointer
 // is over it and a darker tint while it is held down.
+// "selected" is the language row's use: one of the group is the current choice,
+// and it has to read as a choice rather than as a hover.
 void drawPillButton(HDC dc, const RECT& rc, const wchar_t* label, HFONT labelFont,
-                    bool hot, bool down, bool enabled) {
+                    bool hot, bool down, bool enabled, bool selected = false) {
     COLORREF fill = !enabled ? RGB(0xF5, 0xF5, 0xF5)
-                             : (down ? theme::kAccentBorder
-                                     : (hot ? RGB(0xE3, 0xEC, 0xFD)
-                                            : RGB(0xF2, 0xF2, 0xF2)));
+                             : (selected ? theme::kNavSelected
+                                         : (down ? theme::kAccentBorder
+                                                 : (hot ? RGB(0xE3, 0xEC, 0xFD)
+                                                        : RGB(0xF2, 0xF2, 0xF2))));
     fillRoundRect(dc, rc, theme::kRadiusControl, fill);
 
     COLORREF text = enabled ? theme::kTableText : RGB(0xB0, 0xB0, 0xB0);
     if (enabled && down) text = theme::kTopBarText;
+    else if (enabled && selected) text = theme::kAccent;
     else if (enabled && hot) text = theme::kAccentBorder;
     drawText(dc, label, rc, text, labelFont,
              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -1587,7 +1606,8 @@ void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
     // and the path line under them. A larger text size grows the card instead of
     // clipping the last row. The +1 is the separator's hairline.
     const int cardH = m.pad * 2 + m.title + (m.row + m.hint) +
-                      (m.blockGap * 2 + 1) + (m.row + m.hint) + m.rowGap + m.path;
+                      (m.blockGap * 2 + 1) + (m.row + m.hint) + m.rowGap + m.path +
+                      (m.blockGap * 2 + 1) + (m.row + m.hint);
 
     // Placed once and then held: see settingsCardTop. Growing the text size makes
     // the card taller, and the height is what changes, not the top.
@@ -1617,7 +1637,7 @@ void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
 
     RECT titleRc = {card.left + pad, y, card.right - pad - theme::zoom(36),
                     y + theme::zoom(28)};
-    drawText(dc, L"设置", titleRc, theme::kPageTitle, s->titleFont);
+    drawText(dc, i18n::tr(L"设置"), titleRc, theme::kPageTitle, s->titleFont);
     y += theme::zoom(38);
 
     RECT line = {card.left + pad, y, card.right - pad, y + 1};
@@ -1628,7 +1648,7 @@ void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
     {
         RECT labelRc = {card.left + pad, y, card.left + pad + theme::zoom(120),
                         y + rowH};
-        drawText(dc, L"字体大小", labelRc, theme::kTableText, s->boldFont);
+        drawText(dc, i18n::tr(L"字体大小"), labelRc, theme::kTableText, s->boldFont);
 
         // A stepper: minus, the value, plus. The row is right-aligned so the
         // controls sit under the switch on the row below.
@@ -1670,7 +1690,7 @@ void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
             RECT resetRc = {minusRc.left - gap - resetW, minusRc.top,
                             minusRc.left - gap, minusRc.bottom};
             s->settingsRects[kSettingsScaleReset] = resetRc;
-            drawPillButton(dc, resetRc, L"重置", s->font,
+            drawPillButton(dc, resetRc, i18n::tr(L"重置"), s->font,
                            s->settingsHot == kSettingsScaleReset,
                            s->settingsPressed == kSettingsScaleReset, true);
         } else {
@@ -1679,7 +1699,7 @@ void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
 
         y += rowH;
         RECT hint = {card.left + pad, y, card.right - pad, y + hintH};
-        drawText(dc, L"调整整个界面的文字大小，立即生效并记住选择。",
+        drawText(dc, i18n::tr(L"调整整个界面的文字大小，立即生效并记住选择。"),
                  hint, theme::kPageSubtitle, s->font);
         y += hintH;
     }
@@ -1695,7 +1715,7 @@ void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
     {
         RECT labelRc = {card.left + pad, y, card.left + pad + theme::zoom(120),
                         y + rowH};
-        drawText(dc, L"调试日志", labelRc, theme::kTableText, s->boldFont);
+        drawText(dc, i18n::tr(L"调试日志"), labelRc, theme::kTableText, s->boldFont);
 
         // A switch, drawn the way the rest of the shell draws its controls.
         // The hit rectangle is the whole row rather than the track alone: a
@@ -1726,8 +1746,8 @@ void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
         // is itself clickable and opens the folder.
         RECT hint = {card.left + pad, y, card.right - pad, y + hintH};
         drawText(dc,
-                 on ? L"已启用。程序会把运行情况写入下面的文件，便于排查问题。"
-                    : L"启用后会在程序所在目录持续写入日志，便于排查问题。",
+                 on ? i18n::tr(L"已启用。程序会把运行情况写入下面的文件，便于排查问题。")
+                    : i18n::tr(L"启用后会在程序所在目录持续写入日志，便于排查问题。"),
                  hint, theme::kPageSubtitle, s->font);
         y += hintH + m.rowGap;
     }
@@ -1742,6 +1762,52 @@ void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
                  s->settingsHot == kSettingsPath ? theme::kAccentBorder
                                                  : theme::kPageSubtitle,
                  s->font, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+    }
+
+    // --- interface language -------------------------------------------------
+    //
+    // The choices are drawn as a row of pills rather than a dropdown: there are
+    // only three, and a popup menu here would be the one piece of the settings
+    // card not drawn by this program.
+    {
+        const int sepY = pathRc.bottom + m.blockGap;
+        RECT sep = {card.left + pad, sepY, card.right - pad, sepY + 1};
+        fillRect(dc, sep, theme::kDivider);
+
+        const int langY = sepY + 1 + m.blockGap;
+        RECT labelRc = {card.left + pad, langY, card.left + pad + theme::zoom(120),
+                        langY + rowH};
+        drawText(dc, i18n::tr(L"界面语言"), labelRc, theme::kTableText, s->boldFont);
+
+        const std::vector<i18n::LanguageInfo>& langs = i18n::languages();
+        const int pillW = theme::zoom(96);
+        const int pillH = theme::zoom(28);
+        const int gap = theme::zoom(8);
+
+        // Right-aligned with the rows above it.
+        int x = card.right - pad - (pillW * (int)langs.size() + gap * ((int)langs.size() - 1));
+        const int pillTop = langY + (rowH - pillH) / 2;
+
+        for (size_t i = 0; i < langs.size(); ++i) {
+            RECT pill = {x, pillTop, x + pillW, pillTop + pillH};
+            const int item = kSettingsLangFirst + static_cast<int>(i);
+            s->settingsRects[item] = pill;
+
+            const bool selected = i18n::selection() == langs[i].language;
+            // The entries are keys, so the functional one - "follow system" -
+            // translates, while a language's own name is in the table as itself
+            // and comes back unchanged, which is how a language list should read.
+            drawPillButton(dc, pill, i18n::tr(langs[i].name), s->font,
+                           selected || s->settingsHot == item,
+                           s->settingsPressed == item, true,
+                           selected);
+            x += pillW + gap;
+        }
+
+        const int hintY = langY + rowH;
+        RECT hint = {card.left + pad, hintY, card.right - pad, hintY + hintH};
+        drawText(dc, i18n::tr(L"默认跟随系统语言，切换后立即生效并记住选择。"),
+                 hint, theme::kPageSubtitle, s->font);
     }
 
     // Close button, where the about box puts its own.
@@ -1853,6 +1919,53 @@ void applyTextScale(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
+// Puts a new interface language into effect.
+//
+// Most of the interface is drawn by this window, so invalidating it is enough
+// for the menu, the buttons and the labels. What is not drawn from here is the
+// text held inside the child controls - the list view's column titles and the
+// sidebar's entries - and the collected report, whose strings were built by
+// calling tr() while it was gathered and cannot be translated after the fact.
+// Those are re-set and re-collected respectively.
+void applyLanguage(HWND hwnd) {
+    AppState* s = state(hwnd);
+    if (!s) return;
+
+    // The list view owns its column titles; they are stored text, not painted
+    // from here, so they have to be set again rather than merely invalidated.
+    if (s->valueList) {
+        LVCOLUMNW col = {};
+        col.mask = LVCF_TEXT;
+        col.pszText = const_cast<LPWSTR>(i18n::tr(L"属性"));
+        ListView_SetColumn(s->valueList, 0, &col);
+        col.pszText = const_cast<LPWSTR>(i18n::tr(L"值"));
+        ListView_SetColumn(s->valueList, 1, &col);
+    }
+
+    if (s->tool == ToolKind::DriverCaps) {
+        // Dropping the cache and going through loadCurrentApi re-collects the
+        // active API in the new language and refills the sidebar and the table.
+        // The other API is left stale and is gathered when it is next selected.
+        //
+        // Re-collecting is what this costs: gathering a report creates a device
+        // and an OpenGL or Vulkan context. It is only done while the capability
+        // viewer is the active tool, which is the only place those strings can
+        // be on screen; from the driver or decode test the switch is pure
+        // repaint and never touches the driver.
+        s->glLoaded = false;
+        s->vkLoaded = false;
+        loadCurrentApi(hwnd);
+    } else {
+        populateSections(hwnd);
+    }
+
+    // The static control holds its own copy of the status line.
+    updateStatus(hwnd);
+
+    layoutChildren(hwnd);
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
 // Which settings row a point falls on, or kSettingsNone.
 //
 // The rectangles are recorded by the card as it draws, so a row that is not on
@@ -1890,8 +2003,24 @@ void activateSettingsItem(HWND hwnd, int item) {
             return;
         case kSettingsLog:
             applog::setEnabled(!applog::enabled());
-            applog::write(L"设置：调试日志 %ls", applog::enabled() ? L"开" : L"关");
+            applog::write(i18n::tr(L"设置：调试日志 %ls"), applog::enabled() ? i18n::tr(L"开") : i18n::tr(L"关"));
             break;
+        case kSettingsLangFirst:
+        case kSettingsLangFirst + 1: {
+            // The pill index maps straight onto the language list, which is what
+            // the paint side walked to lay them out in the first place.
+            const std::vector<i18n::LanguageInfo>& langs = i18n::languages();
+            const int index = item - kSettingsLangFirst;
+            if (index < 0 || index >= static_cast<int>(langs.size())) return;
+            i18n::setLanguage(langs[index].language);
+            applog::write(i18n::tr(L"界面语言：%hs"), i18n::code().c_str());
+            // Forces the card itself to be laid out again as well: the language
+            // pills change which of them is the selected one, and that is drawn
+            // from the choice rather than from a hover.
+            InvalidateRect(hwnd, nullptr, TRUE);
+            applyLanguage(hwnd);
+            return;
+        }
         case kSettingsPath: {
             // Opening the folder is the useful next step after turning logging
             // on, so the path line does that.
@@ -2491,23 +2620,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     // is already drawn at the size the user chose, instead of opening at the
     // design size and jumping.
     settings::init();
-    applog::write(L"===== Tux-Tools 启动 =====");
-    applog::write(L"界面文字大小：%d%%", theme::textScale());
+    applog::write(i18n::tr(L"===== Tux-Tools 启动 ====="));
+    applog::write(i18n::tr(L"界面文字大小：%d%%"), theme::textScale());
+    applog::write(i18n::tr(L"界面语言：%hs"), i18n::code().c_str());
     // One block of machine facts up front. On a machine that needs diagnosing
     // this saves running several separate commands there.
     applog::writeEnvironmentSnapshot();
     // Installed once logging is on, so a crash is recorded rather than just ending
     // the file.
     applog::installCrashHandler();
-    applog::write(L"命令行：%ls", GetCommandLineW());
-    applog::write(L"COM 初始化：0x%08lx", static_cast<unsigned long>(comInit));
+    applog::write(i18n::tr(L"命令行：%ls"), GetCommandLineW());
+    applog::write(i18n::tr(L"COM 初始化：0x%08lx"), static_cast<unsigned long>(comInit));
     {
         OSVERSIONINFOW os = {};
         os.dwOSVersionInfoSize = sizeof(os);
         // GetVersionEx lies without a manifest opt-in, so read the build number
         // from the file version of kernel32 instead - it is what tells Wine apart
         // from Windows and one Wine build from another.
-        std::wstring build = L"未知";
+        std::wstring build = i18n::tr(L"未知");
         wchar_t sys[MAX_PATH] = {0};
         if (GetSystemDirectoryW(sys, MAX_PATH)) {
             const std::wstring k32 = std::wstring(sys) + L"\\kernel32.dll";
@@ -2536,7 +2666,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
         // because the first two fields are frozen for compatibility. RtlGetVersion
         // gives the real build, and the two together identify the system well
         // enough to tell Windows from Wine and one Wine build from another.
-        std::wstring real = L"未知";
+        std::wstring real = i18n::tr(L"未知");
         HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
         if (ntdll) {
             typedef LONG(WINAPI * RtlGetVersionFn)(PRTL_OSVERSIONINFOW);
@@ -2551,8 +2681,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
                 real = buf;
             }
         }
-        applog::write(L"系统版本：%ls（kernel32 %ls）", real.c_str(), build.c_str());
-        applog::write(L"处理器架构：%ls",
+        applog::write(i18n::tr(L"系统版本：%ls（kernel32 %ls）"), real.c_str(), build.c_str());
+        applog::write(i18n::tr(L"处理器架构：%ls"),
 #if defined(_WIN64)
                       L"x86_64",
 #else
@@ -2754,7 +2884,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
             DispatchMessageW(&msg);
         }
     }
-    applog::write(L"主循环结束，准备退出");
+    applog::write(i18n::tr(L"主循环结束，准备退出"));
     applog::shutdown();
     if (SUCCEEDED(comInit)) CoUninitialize();
     return static_cast<int>(msg.wParam);

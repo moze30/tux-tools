@@ -29,24 +29,25 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include "i18n.h"
 
 namespace render {
 
 namespace {
 void logCompileErrors(const wchar_t* which, ID3DBlob* errors) {
     if (!errors) {
-        applog::write(L"%ls：编译器未返回诊断信息", which);
+        applog::write(i18n::tr(L"%ls：编译器未返回诊断信息"), which);
         return;
     }
     const char* text = static_cast<const char*>(errors->GetBufferPointer());
     const SIZE_T size = errors->GetBufferSize();
     if (!text || size == 0) {
-        applog::write(L"%ls：编译器诊断信息为空", which);
+        applog::write(i18n::tr(L"%ls：编译器诊断信息为空"), which);
         return;
     }
     std::string narrow(text, size);
     const std::wstring wide(narrow.begin(), narrow.end());
-    applog::write(L"%ls 编译失败：", which);
+    applog::write(i18n::tr(L"%ls 编译失败："), which);
     applog::writeRaw(wide.c_str());
 }
 
@@ -220,7 +221,7 @@ public:
     void shutdown() override;
     std::wstring deviceInfo() const override { return deviceInfo_; }
     std::wstring failureReason() const override {
-        return failureReason_.empty() ? std::wstring(L"未知原因") : failureReason_;
+        return failureReason_.empty() ? std::wstring(i18n::tr(L"未知原因")) : failureReason_;
     }
 
 
@@ -342,9 +343,9 @@ bool Dx11Tool::createDevice(HWND host) {
             &desc, &swapChain_, &device_, &obtained, &context_);
     }
     if (FAILED(hr)) {
-        applog::writeHresult(L"Direct3D 11：创建设备与交换链（硬件与 WARP 均失败）", hr);
+        applog::writeHresult(i18n::tr(L"Direct3D 11：创建设备与交换链（硬件与 WARP 均失败）"), hr);
         // The combined call hides which half failed, so work it out here.
-        failureReason_ = L"无法创建 D3D11 设备";
+        failureReason_ = i18n::tr(L"无法创建 D3D11 设备");
         return false;
     }
 
@@ -377,16 +378,16 @@ bool Dx11Tool::createShaders() {
     HRESULT hr = D3DCompile(kSceneShader, sizeof(kSceneShader) - 1, "scene",
                             nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &vsBlob, &errors);
     if (FAILED(hr)) {
-        applog::writeHresult(L"Direct3D 11：编译场景顶点着色器", hr);
-        logCompileErrors(L"场景顶点着色器", errors);
+        applog::writeHresult(i18n::tr(L"Direct3D 11：编译场景顶点着色器"), hr);
+        logCompileErrors(i18n::tr(L"场景顶点着色器"), errors);
         if (errors) errors->Release();
         return false;
     }
     hr = D3DCompile(kSceneShader, sizeof(kSceneShader) - 1, "scene",
                     nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psBlob, &errors);
     if (FAILED(hr)) {
-        applog::writeHresult(L"Direct3D 11：编译场景像素着色器", hr);
-        logCompileErrors(L"场景像素着色器", errors);
+        applog::writeHresult(i18n::tr(L"Direct3D 11：编译场景像素着色器"), hr);
+        logCompileErrors(i18n::tr(L"场景像素着色器"), errors);
         if (errors) errors->Release();
         vsBlob->Release();
         return false;
@@ -415,8 +416,8 @@ bool Dx11Tool::createShaders() {
     hr = D3DCompile(kPostShader, sizeof(kPostShader) - 1, "post",
                     nullptr, nullptr, "VSFullscreen", "vs_5_0", 0, 0, &postVs, &errors);
     if (FAILED(hr)) {
-        applog::writeHresult(L"Direct3D 11：编译全屏顶点着色器", hr);
-        logCompileErrors(L"全屏顶点着色器", errors);
+        applog::writeHresult(i18n::tr(L"Direct3D 11：编译全屏顶点着色器"), hr);
+        logCompileErrors(i18n::tr(L"全屏顶点着色器"), errors);
         if (errors) errors->Release();
         psBlob->Release();
         return false;
@@ -444,9 +445,9 @@ bool Dx11Tool::createShaders() {
         hr = D3DCompile(kPostShader, sizeof(kPostShader) - 1, "post",
                         nullptr, nullptr, pass.entry, "ps_5_0", 0, 0, &blob, &errors);
         if (FAILED(hr)) {
-            applog::write(L"Direct3D 11：编译后处理通道 %hs 失败", pass.entry);
-            applog::writeHresult(L"Direct3D 11：编译后处理着色器", hr);
-            logCompileErrors(L"后处理着色器", errors);
+            applog::write(i18n::tr(L"Direct3D 11：编译后处理通道 %hs 失败"), pass.entry);
+            applog::writeHresult(i18n::tr(L"Direct3D 11：编译后处理着色器"), hr);
+            logCompileErrors(i18n::tr(L"后处理着色器"), errors);
             if (errors) errors->Release();
             psBlob->Release();
             return false;
@@ -688,25 +689,25 @@ void Dx11Tool::releaseTargets() {
 }
 
 bool Dx11Tool::init(HWND host) {
-    applog::write(L"Direct3D 11：开始初始化");
+    applog::write(i18n::tr(L"Direct3D 11：开始初始化"));
     if (!createDevice(host)) {
-        if (failureReason_.empty()) failureReason_ = L"无法创建设备";
+        if (failureReason_.empty()) failureReason_ = i18n::tr(L"无法创建设备");
         return false;
     }
-    applog::write(L"Direct3D 11：设备已建立，%ls", deviceInfo_.c_str());
+    applog::write(i18n::tr(L"Direct3D 11：设备已建立，%ls"), deviceInfo_.c_str());
 
     // The steps are spelled out one at a time rather than chained with ||,
     // because the log is only useful if it says which one stopped.
-    if (!createShaders()) { failureReason_ = L"无法编译着色器"; return false; }
-    applog::write(L"Direct3D 11：着色器已编译");
-    if (!createGeometry()) { failureReason_ = L"无法创建几何缓冲"; return false; }
-    if (!createTextures()) { failureReason_ = L"无法创建纹理"; return false; }
-    if (!createStates()) { failureReason_ = L"无法创建渲染状态"; return false; }
-    if (!createFullscreenQuad()) { failureReason_ = L"无法创建全屏四边形"; return false; }
+    if (!createShaders()) { failureReason_ = i18n::tr(L"无法编译着色器"); return false; }
+    applog::write(i18n::tr(L"Direct3D 11：着色器已编译"));
+    if (!createGeometry()) { failureReason_ = i18n::tr(L"无法创建几何缓冲"); return false; }
+    if (!createTextures()) { failureReason_ = i18n::tr(L"无法创建纹理"); return false; }
+    if (!createStates()) { failureReason_ = i18n::tr(L"无法创建渲染状态"); return false; }
+    if (!createFullscreenQuad()) { failureReason_ = i18n::tr(L"无法创建全屏四边形"); return false; }
     createSizeDependent();
-    if (!createTargets()) { failureReason_ = L"无法创建离屏目标"; return false; }
-    if (!rtv_) { failureReason_ = L"渲染目标视图为空"; return false; }
-    applog::write(L"Direct3D 11：初始化完成");
+    if (!createTargets()) { failureReason_ = i18n::tr(L"无法创建离屏目标"); return false; }
+    if (!rtv_) { failureReason_ = i18n::tr(L"渲染目标视图为空"); return false; }
+    applog::write(i18n::tr(L"Direct3D 11：初始化完成"));
     return true;
 }
 

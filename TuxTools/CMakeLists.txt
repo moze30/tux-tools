@@ -23,6 +23,9 @@ add_executable(TuxTools WIN32
     src/app_log.cpp
     src/settings.h
     src/settings.cpp
+    # Interface language: the table of translations and the environment lookup.
+    src/i18n.h
+    src/i18n.cpp
     src/theme.h
     src/dpi.h
     src/render/render_tool.h

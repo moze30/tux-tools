@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "i18n.h"
 
 namespace {
 
@@ -211,7 +212,7 @@ void collectWglExtensions(viewer::Report& report) {
     typedef const char*(WINAPI * PFN_wglGetExtensionsStringARB)(HDC);
     typedef const char*(WINAPI * PFN_wglGetExtensionsStringEXT)();
 
-    viewer::Section& section = report.addSection(L"WGL 扩展（系统层）");
+    viewer::Section& section = report.addSection(i18n::tr(L"WGL 扩展（系统层）"));
 
     auto* arb = reinterpret_cast<PFN_wglGetExtensionsStringARB>(
         glProc("wglGetExtensionsStringARB"));
@@ -224,11 +225,11 @@ void collectWglExtensions(viewer::Report& report) {
     }
 
     if (!list || !*list) {
-        section.fields.push_back({L"状态", L"无 WGL 扩展字符串"});
+        section.fields.push_back({i18n::tr(L"状态"), i18n::tr(L"无 WGL 扩展字符串")});
         return;
     }
     for (const std::string& e : split(list)) {
-        section.fields.push_back({viewer::toWide(e), L"支持"});
+        section.fields.push_back({viewer::toWide(e), i18n::tr(L"支持")});
     }
 }
 
@@ -241,9 +242,9 @@ Report collectOpenGL() {
 
     RenderContext ctx;
     if (!ctx.create()) {
-        report.description = L"OpenGL - 无法创建上下文";
+        report.description = i18n::tr(L"OpenGL - 无法创建上下文");
         report.addSection(L"OpenGL");
-        report.add(L"状态", L"无法在当前系统上创建 OpenGL 上下文。");
+        report.add(i18n::tr(L"状态"), i18n::tr(L"无法在当前系统上创建 OpenGL 上下文。"));
         return report;
     }
 
@@ -257,13 +258,13 @@ Report collectOpenGL() {
 
     report.description = L"OpenGL " + toWide(version) + L" - " + toWide(renderer);
 
-    Section& impl = report.addSection(L"实现信息");
-    impl.fields.push_back({L"厂商", toWide(vendor)});
-    impl.fields.push_back({L"渲染器", toWide(renderer)});
-    impl.fields.push_back({L"OpenGL 版本", toWide(version)});
-    impl.fields.push_back({L"着色语言版本", toWide(glsl)});
+    Section& impl = report.addSection(i18n::tr(L"实现信息"));
+    impl.fields.push_back({i18n::tr(L"厂商"), toWide(vendor)});
+    impl.fields.push_back({i18n::tr(L"渲染器"), toWide(renderer)});
+    impl.fields.push_back({i18n::tr(L"OpenGL 版本"), toWide(version)});
+    impl.fields.push_back({i18n::tr(L"着色语言版本"), toWide(glsl)});
 
-    Section& limits = report.addSection(L"驱动限制");
+    Section& limits = report.addSection(i18n::tr(L"驱动限制"));
     for (const LimitEntry& entry : kLimits) {
         if (entry.pname == GL_MAX_VIEWPORT_DIMS) {
             GLint dims[2] = {0, 0};
@@ -282,23 +283,23 @@ Report collectOpenGL() {
         }
     }
 
-    Section& extensions = report.addSection(L"OpenGL 扩展");
+    Section& extensions = report.addSection(i18n::tr(L"OpenGL 扩展"));
     if (major >= 3) {
         auto glGetStringi = reinterpret_cast<PFN_glGetStringi>(glProc("glGetStringi"));
         GLint count = 0;
         if (glGetStringi && glTryGetInt(GL_NUM_EXTENSIONS, &count)) {
             for (GLint i = 0; i < count; ++i) {
                 const GLubyte* e = glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i));
-                if (e) extensions.fields.push_back({toWide(reinterpret_cast<const char*>(e)), L"支持"});
+                if (e) extensions.fields.push_back({toWide(reinterpret_cast<const char*>(e)), i18n::tr(L"支持")});
             }
         }
     } else {
         for (const std::string& e : split(glString(GL_EXTENSIONS))) {
-            extensions.fields.push_back({toWide(e), L"支持"});
+            extensions.fields.push_back({toWide(e), i18n::tr(L"支持")});
         }
     }
     extensions.fields.insert(extensions.fields.begin(),
-                             {L"数量", formatUInt(extensions.fields.size())});
+                             {i18n::tr(L"数量"), formatUInt(extensions.fields.size())});
 
     GLint numFormats = 0;
     if (glTryGetInt(GL_NUM_COMPRESSED_TEXTURE_FORMATS, &numFormats) && numFormats > 0) {
@@ -307,7 +308,7 @@ Report collectOpenGL() {
         }
         glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS, formats.data());
         if (glGetError() == GL_NO_ERROR) {
-            Section& section = report.addSection(L"压缩纹理格式");
+            Section& section = report.addSection(i18n::tr(L"压缩纹理格式"));
             for (GLint f : formats) {
                 section.fields.push_back({formatHex(static_cast<unsigned long long>(f)), L""});
             }

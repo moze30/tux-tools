@@ -21,6 +21,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include "i18n.h"
 
 namespace decode {
 
@@ -223,7 +224,7 @@ void DecodeTest::setMethod(Method m) {
     method_ = m;
     status_.clear();
     appendLog(L"");
-    Log_Printf(L"[选择] %ls", methodName(m));
+    Log_Printf(i18n::tr(L"[选择] %ls"), methodName(m));
 }
 
 // --- file selection ---------------------------------------------------------
@@ -237,21 +238,31 @@ bool DecodeTest::chooseFile(HWND owner) {
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
-    ofn.lpstrFilter =
-        L"媒体文件\0*.mp4;*.mkv;*.avi;*.wmv;*.mov;*.mpg;*.mpeg;*.ts;*.m2ts;"
-        L"*.webm;*.flv;*.rmvb;*.m4v;*.3gp;*.mp3;*.aac;*.flac;*.wav;*.wma\0"
-        L"所有文件\0*.*\0";
+    // A filter is a double-NUL-terminated list of label/pattern pairs, so the
+    // translated parts are assembled into one buffer instead of being handed
+    // over as one literal: only the two labels are translatable.
+    std::wstring filter;
+    filter += i18n::tr(L"媒体文件");
+    filter += L'\0';
+    filter += L"*.mp4;*.mkv;*.avi;*.wmv;*.mov;*.mpg;*.mpeg;*.ts;*.m2ts;"
+              L"*.webm;*.flv;*.rmvb;*.m4v;*.3gp;*.mp3;*.aac;*.flac;*.wav;*.wma";
+    filter += L'\0';
+    filter += i18n::tr(L"所有文件");
+    filter += L'\0';
+    filter += L"*.*";
+    filter += L'\0';
+    ofn.lpstrFilter = filter.c_str();
     ofn.lpstrFile = path;
     ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrTitle = L"选择要测试解码的媒体文件";
+    ofn.lpstrTitle = i18n::tr(L"选择要测试解码的媒体文件");
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
 
     if (!GetOpenFileNameW(&ofn)) return false;
 
     stop();
     filePath_ = path;
-    Log_Printf(L"[文件] %ls", path);
-    status_ = std::wstring(L"已选择: ") + path;
+    Log_Printf(i18n::tr(L"[文件] %ls"), path);
+    status_ = std::wstring(i18n::tr(L"已选择: ")) + path;
     return true;
 }
 
@@ -260,8 +271,8 @@ bool DecodeTest::chooseFile(HWND owner) {
 void DecodeTest::start() {
     if (running_) return;
     if (filePath_.empty()) {
-        Log_Printf(L"[错误] 请先选择一个媒体文件");
-        status_ = L"未选择文件";
+        Log_Printf(i18n::tr(L"[错误] 请先选择一个媒体文件"));
+        status_ = i18n::tr(L"未选择文件");
         return;
     }
 
@@ -300,7 +311,7 @@ void DecodeTest::start() {
             if (d3d11_video_check_support()) {
                 d3d11_video_init(video_, w, h);
             } else {
-                Log_Printf(L"[警告] 本机不支持 D3D11 视频处理，回退到软件解码");
+                Log_Printf(i18n::tr(L"[警告] 本机不支持 D3D11 视频处理，回退到软件解码"));
             }
             ret = mf_open(filePath_.c_str(), video_, 2);
             break;
@@ -309,15 +320,15 @@ void DecodeTest::start() {
             if (d3d12_video_check_support()) {
                 d3d12_video_init(video_, w, h);
             } else {
-                Log_Printf(L"[警告] 本机不支持 D3D12 视频处理，回退到软件解码");
+                Log_Printf(i18n::tr(L"[警告] 本机不支持 D3D12 视频处理，回退到软件解码"));
             }
             ret = mf_open(filePath_.c_str(), video_, 3);
             break;
     }
 
     if (ret != 0) {
-        Log_Printf(L"[失败] %ls 无法打开该文件", name);
-        status_ = std::wstring(name) + L" 打开失败";
+        Log_Printf(i18n::tr(L"[失败] %ls 无法打开该文件"), name);
+        status_ = std::wstring(name) + i18n::tr(L" 打开失败");
         stop();
         return;
     }
@@ -359,10 +370,10 @@ void DecodeTest::updateStatusFromDecoders() {
             std::swprintf(buf, 128, L" | %dx%d", w, h);
             s += buf;
         } else {
-            s += L" | 仅音频";
+            s += i18n::tr(L" | 仅音频");
         }
         s += L" | ";
-        s += hw ? L"硬件加速" : L"软件解码";
+        s += hw ? i18n::tr(L"硬件加速") : i18n::tr(L"软件解码");
         s += L" | " + formatTime(ds_get_position()) + L" / " + formatTime(ds_get_duration());
         status_ = s;
         return;
@@ -388,10 +399,10 @@ void DecodeTest::updateStatusFromDecoders() {
         }
         s += buf;
     } else {
-        s += L" | 仅音频";
+        s += i18n::tr(L" | 仅音频");
     }
     s += L" | ";
-    s += hw ? L"硬件加速" : L"软件解码";
+    s += hw ? i18n::tr(L"硬件加速") : i18n::tr(L"软件解码");
     s += L" | " + formatHnsTime(mf_get_position()) + L" / " + formatHnsTime(mf_get_duration());
 
     // Dropped frames are the number that actually says whether a decoder is
@@ -399,7 +410,7 @@ void DecodeTest::updateStatusFromDecoders() {
     const int dropped = mf_get_dropped_frames();
     if (dropped > 0) {
         wchar_t buf[64];
-        std::swprintf(buf, 64, L" | 丢帧 %d", dropped);
+        std::swprintf(buf, 64, i18n::tr(L" | 丢帧 %d"), dropped);
         s += buf;
     }
     status_ = s;
@@ -417,7 +428,7 @@ void DecodeTest::tick() {
         // DirectShow runs its own graph thread; the only thing to notice here
         // is the end of the stream.
         if (!ds_is_playing()) {
-            Log_Printf(L"[完成] 播放结束");
+            Log_Printf(i18n::tr(L"[完成] 播放结束"));
             stop();
             return;
         }
@@ -431,12 +442,12 @@ void DecodeTest::tick() {
     // Media Foundation is pull-based: one call decodes and presents one frame.
     const int ret = mf_render_next_frame();
     if (ret == 1) {
-        Log_Printf(L"[完成] 播放结束");
+        Log_Printf(i18n::tr(L"[完成] 播放结束"));
         stop();
         return;
     }
     if (ret == -1) {
-        Log_Printf(L"[错误] 解码失败");
+        Log_Printf(i18n::tr(L"[错误] 解码失败"));
         stop();
         return;
     }
@@ -476,9 +487,9 @@ void DecodeTest::paint(HDC dc, const RECT& area) const {
         // Colour the prefixes the decoders use so failures stand out without
         // needing to read every line.
         COLORREF colour = theme::kTableText;
-        if (line.rfind(L"[错误]", 0) == 0 || line.rfind(L"[失败]", 0) == 0) {
+        if (line.rfind(i18n::tr(L"[错误]"), 0) == 0 || line.rfind(i18n::tr(L"[失败]"), 0) == 0) {
             colour = RGB(0xC6, 0x28, 0x28);
-        } else if (line.rfind(L"[警告]", 0) == 0) {
+        } else if (line.rfind(i18n::tr(L"[警告]"), 0) == 0) {
             colour = RGB(0xE6, 0x7E, 0x22);
         } else if (line.rfind(L"==========", 0) == 0) {
             colour = theme::kAccentBorder;

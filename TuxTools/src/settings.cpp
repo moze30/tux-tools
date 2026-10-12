@@ -4,6 +4,7 @@
 
 #include "settings.h"
 
+#include "i18n.h"
 #include "theme.h"
 
 #include <cstdio>
@@ -34,6 +35,12 @@ void save() {
     WritePrivateProfileStringW(L"ui", L"textScale", value, g_iniPath.c_str());
 }
 
+std::wstring readLanguage() {
+    wchar_t buffer[32] = {0};
+    GetPrivateProfileStringW(L"ui", L"language", L"", buffer, 32, g_iniPath.c_str());
+    return buffer;
+}
+
 int clampToRange(int percent) {
     if (percent < theme::kTextScaleMin) return theme::kTextScaleMin;
     if (percent > theme::kTextScaleMax) return theme::kTextScaleMax;
@@ -56,6 +63,11 @@ void resetTextScale() {
     setTextScale(100);
 }
 
+void saveLanguage(const std::wstring& code) {
+    if (g_iniPath.empty()) return;
+    WritePrivateProfileStringW(L"ui", L"language", code.c_str(), g_iniPath.c_str());
+}
+
 void init() {
     g_iniPath = moduleDirectory() + L"\\Tux-Tools.ini";
 
@@ -64,6 +76,12 @@ void init() {
     const int saved = static_cast<int>(
         GetPrivateProfileIntW(L"ui", L"textScale", 100, g_iniPath.c_str()));
     theme::setTextScale(clampToRange(saved));
+
+    // The language is resolved here rather than at first use: the window title,
+    // the menu and every label are built from tr() during creation, and the
+    // choice has to be in force before the first of those runs. An empty value
+    // means the user never chose, which leaves it following the environment.
+    i18n::loadSaved(readLanguage());
 }
 
 }  // namespace settings

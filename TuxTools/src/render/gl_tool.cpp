@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include "i18n.h"
 
 namespace render {
 
@@ -187,7 +188,7 @@ public:
     void shutdown() override;
     std::wstring deviceInfo() const override { return deviceInfo_; }
     std::wstring failureReason() const override {
-        return failureReason_.empty() ? std::wstring(L"未知原因") : failureReason_;
+        return failureReason_.empty() ? std::wstring(i18n::tr(L"未知原因")) : failureReason_;
     }
 
 private:
@@ -235,22 +236,22 @@ bool OpenGlTool::makeContext(HWND host) {
     // and this is the path that fails on Wine when wined3d cannot start.
     const int format = ChoosePixelFormat(dc_, &pfd);
     if (!format) {
-        applog::write(L"OpenGL：ChoosePixelFormat 未返回可用格式（驱动不支持 OpenGL 像素格式）");
+        applog::write(i18n::tr(L"OpenGL：ChoosePixelFormat 未返回可用格式（驱动不支持 OpenGL 像素格式）"));
         return false;
     }
     if (!SetPixelFormat(dc_, format, &pfd)) {
-        applog::write(L"OpenGL：SetPixelFormat 失败（格式 %d，错误 %lu）", format,
+        applog::write(i18n::tr(L"OpenGL：SetPixelFormat 失败（格式 %d，错误 %lu）"), format,
                       GetLastError());
         return false;
     }
 
     rc_ = wglCreateContext(dc_);
     if (!rc_) {
-        applog::write(L"OpenGL：wglCreateContext 失败（错误 %lu）", GetLastError());
+        applog::write(i18n::tr(L"OpenGL：wglCreateContext 失败（错误 %lu）"), GetLastError());
         return false;
     }
     if (!wglMakeCurrent(dc_, rc_)) {
-        applog::write(L"OpenGL：wglMakeCurrent 失败（错误 %lu）", GetLastError());
+        applog::write(i18n::tr(L"OpenGL：wglMakeCurrent 失败（错误 %lu）"), GetLastError());
         return false;
     }
 
@@ -260,7 +261,7 @@ bool OpenGlTool::makeContext(HWND host) {
     {
         const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
         const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
-        applog::write(L"OpenGL：上下文已建立 - %hs / %hs",
+        applog::write(i18n::tr(L"OpenGL：上下文已建立 - %hs / %hs"),
                       renderer ? renderer : "(无渲染器)",
                       version ? version : "(无版本)");
     }
@@ -312,14 +313,13 @@ bool OpenGlTool::init(HWND host) {
     if (height_ <= 0) height_ = 1;
     host_ = host;
 
-    applog::write(L"OpenGL：开始创建上下文");
+    applog::write(i18n::tr(L"OpenGL：开始创建上下文"));
     if (!makeContext(host)) {
         // WGL gives no reason of its own here, so the reason names the step and
         // the log carries whatever the driver printed. On Wine this is the one
         // that fails when wined3d cannot start, which is the case worth seeing.
-        failureReason_ = L"无法创建 WGL 上下文（OpenGL 不可用）";
-        applog::write(L"OpenGL：makeContext 失败 - ChoosePixelFormat / SetPixelFormat / "
-                      L"wglCreateContext / wglMakeCurrent 之一未成功");
+        failureReason_ = i18n::tr(L"无法创建 WGL 上下文（OpenGL 不可用）");
+        applog::write(i18n::tr(L"OpenGL：makeContext 失败 - ChoosePixelFormat / SetPixelFormat / wglCreateContext / wglMakeCurrent 之一未成功"));
         return false;
     }
 

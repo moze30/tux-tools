@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <winver.h>
+#include "i18n.h"
 
 namespace applog {
 
@@ -119,7 +120,7 @@ void shutdown() {
     if (!g_lockReady) return;
     // No EnterCriticalSection here: shutdown runs on the UI thread after the
     // loop has ended and nothing else writes.
-    writeChunkLocked(L"===== 程序正常退出 =====");
+    writeChunkLocked(i18n::tr(L"===== 程序正常退出 ====="));
     closeFile();
     DeleteCriticalSection(&g_lock);
     g_lockReady = false;
@@ -135,9 +136,9 @@ void setEnabled(bool value) {
     g_enabled = value;
     if (value) {
         openFile();
-        writeChunkLocked(L"===== 调试日志已启用 =====");
+        writeChunkLocked(i18n::tr(L"===== 调试日志已启用 ====="));
     } else {
-        writeChunkLocked(L"===== 调试日志已关闭 =====");
+        writeChunkLocked(i18n::tr(L"===== 调试日志已关闭 ====="));
         closeFile();
     }
     LeaveCriticalSection(&g_lock);
@@ -223,12 +224,12 @@ void writeHresult(const wchar_t* what, long hr) {
     if (sys) LocalFree(sys);
 
     if (name) {
-        write(L"%ls 失败：%ls (0x%08lX)", what, name,
+        write(i18n::tr(L"%ls 失败：%ls (0x%08lX)"), what, name,
               static_cast<unsigned long>(hr));
     } else {
-        write(L"%ls 失败：0x%08lX", what, static_cast<unsigned long>(hr));
+        write(i18n::tr(L"%ls 失败：0x%08lX"), what, static_cast<unsigned long>(hr));
     }
-    if (!message.empty()) write(L"          系统消息：%ls", message.c_str());
+    if (!message.empty()) write(i18n::tr(L"          系统消息：%ls"), message.c_str());
 }
 
 void writeVkResult(const wchar_t* what, int result) {
@@ -259,11 +260,11 @@ void writeVkResult(const wchar_t* what, int result) {
     }
     // The wording follows the result: this is used for probes that are expected
     // to succeed as well as for failures, and "VK_SUCCESS failed" reads absurdly.
-    const wchar_t* verb = (result == 0) ? L"成功" : L"失败";
+    const wchar_t* verb = (result == 0) ? i18n::tr(L"成功") : i18n::tr(L"失败");
     if (name) {
-        write(L"%ls %ls：%ls (VkResult %d)", what, verb, name, result);
+        write(i18n::tr(L"%ls %ls：%ls (VkResult %d)"), what, verb, name, result);
     } else {
-        write(L"%ls %ls：VkResult %d", what, verb, result);
+        write(i18n::tr(L"%ls %ls：VkResult %d"), what, verb, result);
     }
 }
 
@@ -276,17 +277,17 @@ void writeVkResult(const wchar_t* what, int result) {
 void writeEnvironmentSnapshot() {
     if (!g_enabled) return;
 
-    write(L"---- 运行环境 ----");
+    write(i18n::tr(L"---- 运行环境 ----"));
 
     // Vulkan loader, if there is one, and where it came from.
     {
         HMODULE vk = LoadLibraryW(L"vulkan-1.dll");
         if (!vk) {
-            write(L"vulkan-1.dll：未找到");
+            write(i18n::tr(L"vulkan-1.dll：未找到"));
         } else {
             wchar_t path[MAX_PATH] = {0};
             if (GetModuleFileNameW(vk, path, MAX_PATH)) {
-                write(L"vulkan-1.dll：%ls", path);
+                write(i18n::tr(L"vulkan-1.dll：%ls"), path);
                 DWORD dummy = 0;
                 const DWORD size = GetFileVersionInfoSizeW(path, &dummy);
                 if (size > 0) {
@@ -297,7 +298,7 @@ void writeEnvironmentSnapshot() {
                         if (VerQueryValueW(data.data(), L"\\",
                                            reinterpret_cast<void**>(&info), &len) &&
                             info) {
-                            write(L"  loader 文件版本：%u.%u.%u.%u",
+                            write(i18n::tr(L"  loader 文件版本：%u.%u.%u.%u"),
                                   HIWORD(info->dwFileVersionMS),
                                   LOWORD(info->dwFileVersionMS),
                                   HIWORD(info->dwFileVersionLS),
@@ -322,14 +323,14 @@ void writeEnvironmentSnapshot() {
             int found = 0;
             while (RegEnumValueW(key, index++, name, &nameLen, nullptr, nullptr, nullptr,
                                  nullptr) == ERROR_SUCCESS) {
-                write(L"Vulkan ICD：%ls", name);
+                write(i18n::tr(L"Vulkan ICD：%ls"), name);
                 ++found;
                 nameLen = 512;
             }
-            if (found == 0) write(L"Vulkan ICD：注册表项为空");
+            if (found == 0) write(i18n::tr(L"Vulkan ICD：注册表项为空"));
             RegCloseKey(key);
         } else {
-            write(L"Vulkan ICD：注册表中没有 HKLM\\SOFTWARE\\Khronos\\Vulkan\\Drivers");
+            write(i18n::tr(L"Vulkan ICD：注册表中没有 HKLM\\SOFTWARE\\Khronos\\Vulkan\\Drivers"));
         }
     }
 
@@ -342,7 +343,7 @@ void writeEnvironmentSnapshot() {
         for (const wchar_t* name : dlls) {
             HMODULE mod = LoadLibraryW(name);
             if (!mod) {
-                write(L"  缺少 %ls", name);
+                write(i18n::tr(L"  缺少 %ls"), name);
                 continue;
             }
             wchar_t path[MAX_PATH] = {0};
@@ -375,27 +376,27 @@ void writeEnvironmentSnapshot() {
     {
         HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
         const bool wine = ntdll && GetProcAddress(ntdll, "wine_get_version") != nullptr;
-        write(L"运行在 Wine 下：%ls", wine ? L"是" : L"否");
+        write(i18n::tr(L"运行在 Wine 下：%ls"), wine ? i18n::tr(L"是") : i18n::tr(L"否"));
         if (wine) {
             typedef const char*(CDECL * WineVersionFn)();
             auto fn = reinterpret_cast<WineVersionFn>(
                 reinterpret_cast<void*>(GetProcAddress(ntdll, "wine_get_version")));
             if (fn) {
                 const char* v = fn();
-                if (v) write(L"Wine 版本：%hs", v);
+                if (v) write(i18n::tr(L"Wine 版本：%hs"), v);
             }
             const wchar_t* vars[] = {L"WINEDLLOVERRIDES", L"WINEESYNC", L"WINEFSYNC",
                                      L"DXVK_HUD", L"VK_ICD_FILENAMES", L"MESA_LOADER_DRIVER_OVERRIDE"};
             for (const wchar_t* v : vars) {
                 wchar_t buf[512] = {0};
                 if (GetEnvironmentVariableW(v, buf, 512) > 0) {
-                    write(L"  环境变量 %ls=%ls", v, buf);
+                    write(i18n::tr(L"  环境变量 %ls=%ls"), v, buf);
                 }
             }
         }
     }
 
-    write(L"---- 环境结束 ----");
+    write(i18n::tr(L"---- 环境结束 ----"));
 }
 
 // --- crash reporting ---------------------------------------------------------
@@ -405,19 +406,19 @@ namespace {
 // A short name for the exception codes that actually turn up here.
 const wchar_t* exceptionName(DWORD code) {
     switch (code) {
-        case 0xC0000005: return L"访问冲突（读写无效地址）";
-        case 0xC0000006: return L"页面错误（无法读入页面）";
-        case 0xC000001D: return L"非法指令（可能是不支持的 CPU 指令）";
-        case 0xC0000025: return L"不可继续的异常";
-        case 0xC000008C: return L"数组越界";
-        case 0xC0000094: return L"整数除零";
-        case 0xC0000095: return L"整数溢出";
-        case 0xC0000096: return L"特权指令";
-        case 0xC00000FD: return L"栈溢出";
-        case 0xC0000374: return L"堆损坏";
-        case 0xC0000417: return L"无效参数（CRT 检测到）";
-        case 0xC0000602: return L"安全 cookie 校验失败（栈被破坏）";
-        case 0xE06D7363: return L"未捕获的 C++ 异常";
+        case 0xC0000005: return i18n::tr(L"访问冲突（读写无效地址）");
+        case 0xC0000006: return i18n::tr(L"页面错误（无法读入页面）");
+        case 0xC000001D: return i18n::tr(L"非法指令（可能是不支持的 CPU 指令）");
+        case 0xC0000025: return i18n::tr(L"不可继续的异常");
+        case 0xC000008C: return i18n::tr(L"数组越界");
+        case 0xC0000094: return i18n::tr(L"整数除零");
+        case 0xC0000095: return i18n::tr(L"整数溢出");
+        case 0xC0000096: return i18n::tr(L"特权指令");
+        case 0xC00000FD: return i18n::tr(L"栈溢出");
+        case 0xC0000374: return i18n::tr(L"堆损坏");
+        case 0xC0000417: return i18n::tr(L"无效参数（CRT 检测到）");
+        case 0xC0000602: return i18n::tr(L"安全 cookie 校验失败（栈被破坏）");
+        case 0xE06D7363: return i18n::tr(L"未捕获的 C++ 异常");
         default: return nullptr;
     }
 }
@@ -433,19 +434,19 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* info) {
                         : nullptr;
 
     writeRaw(L"");
-    writeRaw(L"=========== 程序崩溃了 ===========");
+    writeRaw(i18n::tr(L"=========== 程序崩溃了 ==========="));
     const wchar_t* name = exceptionName(code);
     if (name) {
-        write(L"异常：%ls (0x%08lX)", name, static_cast<unsigned long>(code));
+        write(i18n::tr(L"异常：%ls (0x%08lX)"), name, static_cast<unsigned long>(code));
     } else {
-        write(L"异常代码：0x%08lX", static_cast<unsigned long>(code));
+        write(i18n::tr(L"异常代码：0x%08lX"), static_cast<unsigned long>(code));
     }
-    write(L"出错地址：%p", address);
+    write(i18n::tr(L"出错地址：%p"), address);
 
     // The log's own last line is the useful part: it is the last thing the
     // program said it was doing. Pointing at it here saves the reader from
     // having to work out which of several similar lines came last.
-    write(L"上面最后一条普通日志就是崩溃前正在做的事。");
+    write(i18n::tr(L"上面最后一条普通日志就是崩溃前正在做的事。"));
 
     // The faulting module, when the address falls inside one, which is the
     // difference between a bug in this program and one in a driver.
@@ -456,7 +457,7 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* info) {
                        static_cast<LPCWSTR>(address), &module) && module) {
         wchar_t path[MAX_PATH] = {0};
         if (GetModuleFileNameW(module, path, MAX_PATH)) {
-            write(L"出错模块：%ls", path);
+            write(i18n::tr(L"出错模块：%ls"), path);
         }
     }
     writeRaw(L"==================================");
@@ -473,7 +474,7 @@ void installCrashHandler() {
 
 void writeShutdown() {
     if (!g_enabled) return;
-    writeChunkLocked(L"===== 程序正常退出 =====");
+    writeChunkLocked(i18n::tr(L"===== 程序正常退出 ====="));
 }
 
 }  // namespace applog

@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include "i18n.h"
 
 namespace render {
 
@@ -370,7 +371,7 @@ public:
     void shutdown() override;
     std::wstring deviceInfo() const override { return deviceInfo_; }
     std::wstring failureReason() const override {
-        return failureReason_.empty() ? std::wstring(L"未知原因") : failureReason_;
+        return failureReason_.empty() ? std::wstring(i18n::tr(L"未知原因")) : failureReason_;
     }
 
 private:
@@ -480,21 +481,20 @@ bool VulkanTool::createInstance() {
     // A Wine build whose Vulkan layer does not implement Win32 presentation
     // fails exactly here, and this line is the one that explains it.
     if (!supported(VK_KHR_SURFACE_EXTENSION_NAME)) {
-        applog::write(L"Vulkan：实例不支持 VK_KHR_surface");
+        applog::write(i18n::tr(L"Vulkan：实例不支持 VK_KHR_surface"));
         return false;
     }
     if (!supported(VK_KHR_WIN32_SURFACE_EXTENSION_NAME)) {
-        applog::write(L"Vulkan：实例不支持 VK_KHR_win32_surface"
-                      L"（该环境的 Vulkan 无法向窗口呈现，此项不可用）");
+        applog::write(i18n::tr(L"Vulkan：实例不支持 VK_KHR_win32_surface（该环境的 Vulkan 无法向窗口呈现，此项不可用）"));
         return false;
     }
-    applog::write(L"Vulkan：实例扩展可用（VK_KHR_surface、VK_KHR_win32_surface）");
+    applog::write(i18n::tr(L"Vulkan：实例扩展可用（VK_KHR_surface、VK_KHR_win32_surface）"));
 
     // The full list, and whether portability enumeration is on offer. A
     // translation layer usually advertises it; the result is recorded because it
     // identifies the implementation, not because this program uses it.
     {
-        applog::write(L"Vulkan：实例扩展共 %u 个：", count);
+        applog::write(i18n::tr(L"Vulkan：实例扩展共 %u 个："), count);
         std::wstring all;
         for (uint32_t i = 0; i < count; ++i) {
             std::string narrow(have[i].extensionName);
@@ -503,10 +503,10 @@ bool VulkanTool::createInstance() {
             if (i % 3 == 2) { applog::writeRaw(all.c_str()); all.clear(); }
         }
         if (!all.empty()) applog::writeRaw(all.c_str());
-        applog::write(L"Vulkan：VK_KHR_portability_enumeration %ls",
+        applog::write(i18n::tr(L"Vulkan：VK_KHR_portability_enumeration %ls"),
                       supported(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)
-                          ? L"可用"
-                          : L"不可用");
+                          ? i18n::tr(L"可用")
+                          : i18n::tr(L"不可用"));
     }
 
     const char* extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME,
@@ -531,8 +531,7 @@ bool VulkanTool::createSurface() {
     // when Wine's Vulkan layer does not implement window presentation - or the
     // extension is there and the call itself fails. The log says which.
     if (!vk_.CreateWin32SurfaceKHR) {
-        applog::write(L"Vulkan：实例未提供 vkCreateWin32SurfaceKHR"
-                      L"（缺少 VK_KHR_win32_surface 扩展，无法向窗口呈现）");
+        applog::write(i18n::tr(L"Vulkan：实例未提供 vkCreateWin32SurfaceKHR（缺少 VK_KHR_win32_surface 扩展，无法向窗口呈现）"));
         return false;
     }
 
@@ -555,18 +554,18 @@ bool VulkanTool::createSurface() {
         GetWindowRect(host_, &wr);
         RECT cr = {};
         GetClientRect(host_, &cr);
-        applog::write(L"Vulkan：交给 vkCreateWin32SurfaceKHR 的窗口 - handle=%p",
+        applog::write(i18n::tr(L"Vulkan：交给 vkCreateWin32SurfaceKHR 的窗口 - handle=%p"),
                       reinterpret_cast<void*>(host_));
-        applog::write(L"Vulkan：  style=0x%08lX (WS_CHILD=%ls) exstyle=0x%08lX",
+        applog::write(i18n::tr(L"Vulkan：  style=0x%08lX (WS_CHILD=%ls) exstyle=0x%08lX"),
                       static_cast<unsigned long>(style),
-                      (style & WS_CHILD) ? L"是" : L"否",
+                      (style & WS_CHILD) ? i18n::tr(L"是") : i18n::tr(L"否"),
                       static_cast<unsigned long>(exStyle));
-        applog::write(L"Vulkan：  parent=%p root=%p（相同则说明是顶层窗口）",
+        applog::write(i18n::tr(L"Vulkan：  parent=%p root=%p（相同则说明是顶层窗口）"),
                       reinterpret_cast<void*>(parent), reinterpret_cast<void*>(root));
-        applog::write(L"Vulkan：  窗口矩形 %ldx%ld，客户区 %ldx%ld，可见=%ls，最小化=%ls",
+        applog::write(i18n::tr(L"Vulkan：  窗口矩形 %ldx%ld，客户区 %ldx%ld，可见=%ls，最小化=%ls"),
                       wr.right - wr.left, wr.bottom - wr.top, cr.right - cr.left,
-                      cr.bottom - cr.top, IsWindowVisible(host_) ? L"是" : L"否",
-                      IsIconic(host_) ? L"是" : L"否");
+                      cr.bottom - cr.top, IsWindowVisible(host_) ? i18n::tr(L"是") : i18n::tr(L"否"),
+                      IsIconic(host_) ? i18n::tr(L"是") : i18n::tr(L"否"));
     }
 
     const VkResult result = vk_.CreateWin32SurfaceKHR(instance_, &ci, nullptr, &surface_);
@@ -575,11 +574,11 @@ bool VulkanTool::createSurface() {
         // the extension and the call still refused, which is how a translation
         // layer that advertises Win32 presentation without implementing it looks
         // from the outside.
-        applog::writeVkResult(L"Vulkan：vkCreateWin32SurfaceKHR 未成功",
+        applog::writeVkResult(i18n::tr(L"Vulkan：vkCreateWin32SurfaceKHR 未成功"),
                               static_cast<int>(result));
         return false;
     }
-    applog::write(L"Vulkan：Win32 表面已创建");
+    applog::write(i18n::tr(L"Vulkan：Win32 表面已创建"));
     return true;
 }
 
@@ -595,14 +594,14 @@ bool VulkanTool::pickDevice() {
     // A device that enumerates but reports no presenting queue family is the
     // exact shape of "the driver is there, the window path is not", so the two
     // facts are reported together rather than only the final failure.
-    applog::write(L"Vulkan：物理设备 %u 个", count);
+    applog::write(i18n::tr(L"Vulkan：物理设备 %u 个"), count);
 
     for (uint32_t d = 0; d < count; ++d) {
         VkPhysicalDevice dev = devices[d];
         VkPhysicalDeviceProperties dp = {};
         vk_.GetPhysicalDeviceProperties(dev, &dp);
         std::string dn(dp.deviceName);
-        applog::write(L"Vulkan：  [%u] %hs（类型 %d，API %u.%u.%u）", d, dn.c_str(),
+        applog::write(i18n::tr(L"Vulkan：  [%u] %hs（类型 %d，API %u.%u.%u）"), d, dn.c_str(),
                       static_cast<int>(dp.deviceType), VK_VERSION_MAJOR(dp.apiVersion),
                       VK_VERSION_MINOR(dp.apiVersion), VK_VERSION_PATCH(dp.apiVersion));
 
@@ -616,20 +615,20 @@ bool VulkanTool::pickDevice() {
             VkBool32 present = VK_FALSE;
             const VkResult support =
                 vk_.GetPhysicalDeviceSurfaceSupportKHR(dev, i, surface_, &present);
-            applog::write(L"Vulkan：      队列族 %u 支持图形；呈现支持查询=%d，结果=%ls", i,
+            applog::write(i18n::tr(L"Vulkan：      队列族 %u 支持图形；呈现支持查询=%d，结果=%ls"), i,
                           static_cast<int>(support),
                           support != VK_SUCCESS
-                              ? L"查询失败"
-                              : (present ? L"支持呈现" : L"不支持呈现"));
+                              ? i18n::tr(L"查询失败")
+                              : (present ? i18n::tr(L"支持呈现") : i18n::tr(L"不支持呈现")));
             if (support != VK_SUCCESS || !present) continue;
 
             physical_ = dev;
             queueFamily_ = i;
-            applog::write(L"Vulkan：选中设备 %u 的队列族 %u", d, i);
+            applog::write(i18n::tr(L"Vulkan：选中设备 %u 的队列族 %u"), d, i);
             return true;
         }
     }
-    applog::write(L"Vulkan：没有任何设备同时支持图形与向该表面呈现");
+    applog::write(i18n::tr(L"Vulkan：没有任何设备同时支持图形与向该表面呈现"));
     return false;
 }
 
@@ -1320,54 +1319,54 @@ bool VulkanTool::init(HWND host) {
     if (height_ <= 0) height_ = 1;
     host_ = host;
 
-    applog::write(L"Vulkan：开始初始化");
+    applog::write(i18n::tr(L"Vulkan：开始初始化"));
     if (!vk_.loadGlobal()) {
-        failureReason_ = L"无法加载 vulkan-1.dll";
-        applog::write(L"Vulkan：加载 vulkan-1.dll 或解析 vkGetInstanceProcAddr 失败");
+        failureReason_ = i18n::tr(L"无法加载 vulkan-1.dll");
+        applog::write(i18n::tr(L"Vulkan：加载 vulkan-1.dll 或解析 vkGetInstanceProcAddr 失败"));
         return false;
     }
-    applog::write(L"Vulkan：loader 已加载");
+    applog::write(i18n::tr(L"Vulkan：loader 已加载"));
     {
         wchar_t path[MAX_PATH] = {0};
         if (GetModuleFileNameW(vk_.dll, path, MAX_PATH)) {
-            applog::write(L"Vulkan：vulkan-1.dll = %ls", path);
+            applog::write(i18n::tr(L"Vulkan：vulkan-1.dll = %ls"), path);
         }
         // The loader version identifies the implementation far more precisely
         // than the file path does; Winlator replaces this DLL with its own.
         if (vk_.EnumerateInstanceVersion) {
             uint32_t version = 0;
             if (vk_.EnumerateInstanceVersion(&version) == VK_SUCCESS) {
-                applog::write(L"Vulkan：loader 实例版本 %u.%u.%u",
+                applog::write(i18n::tr(L"Vulkan：loader 实例版本 %u.%u.%u"),
                               VK_VERSION_MAJOR(version), VK_VERSION_MINOR(version),
                               VK_VERSION_PATCH(version));
             }
         }
     }
     if (!createInstance()) {
-        failureReason_ = L"无法创建 Vulkan 实例";
+        failureReason_ = i18n::tr(L"无法创建 Vulkan 实例");
         return false;
     }
     if (!loadVkInstance(vk_, instance_)) {
-        failureReason_ = L"无法解析 Vulkan 入口点";
+        failureReason_ = i18n::tr(L"无法解析 Vulkan 入口点");
         return false;
     }
     if (!createSurface()) {
-        failureReason_ = L"无法创建 Win32 表面";
+        failureReason_ = i18n::tr(L"无法创建 Win32 表面");
         return false;
     }
     if (!pickDevice()) {
-        failureReason_ = L"找不到合适的物理设备";
+        failureReason_ = i18n::tr(L"找不到合适的物理设备");
         return false;
     }
-    applog::write(L"Vulkan：实例、表面与物理设备已就绪");
-    if (!createDevice()) { failureReason_ = L"无法创建逻辑设备"; return false; }
-    if (!createCommandPool()) { failureReason_ = L"无法创建命令池"; return false; }
-    if (!createRenderPass()) { failureReason_ = L"无法创建渲染通道"; return false; }
-    if (!createDescriptors()) { failureReason_ = L"无法创建描述符"; return false; }
-    if (!createPipeline()) { failureReason_ = L"无法创建管线"; return false; }
-    if (!createResources()) { failureReason_ = L"无法创建资源"; return false; }
-    if (!createSwapchain()) { failureReason_ = L"无法创建交换链"; return false; }
-    if (!createSyncObjects()) { failureReason_ = L"无法创建同步对象"; return false; }
+    applog::write(i18n::tr(L"Vulkan：实例、表面与物理设备已就绪"));
+    if (!createDevice()) { failureReason_ = i18n::tr(L"无法创建逻辑设备"); return false; }
+    if (!createCommandPool()) { failureReason_ = i18n::tr(L"无法创建命令池"); return false; }
+    if (!createRenderPass()) { failureReason_ = i18n::tr(L"无法创建渲染通道"); return false; }
+    if (!createDescriptors()) { failureReason_ = i18n::tr(L"无法创建描述符"); return false; }
+    if (!createPipeline()) { failureReason_ = i18n::tr(L"无法创建管线"); return false; }
+    if (!createResources()) { failureReason_ = i18n::tr(L"无法创建资源"); return false; }
+    if (!createSwapchain()) { failureReason_ = i18n::tr(L"无法创建交换链"); return false; }
+    if (!createSyncObjects()) { failureReason_ = i18n::tr(L"无法创建同步对象"); return false; }
     return true;
 }
 

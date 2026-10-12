@@ -27,6 +27,7 @@
 
 #include <string>
 #include <vector>
+#include "i18n.h"
 
 namespace decode {
 
@@ -82,8 +83,8 @@ public:
     void setFile(const std::wstring& path) {
         stop();
         filePath_ = path;
-        Log_Printf(L"[文件] %ls", path.c_str());
-        status_ = std::wstring(L"已选择: ") + path;
+        Log_Printf(i18n::tr(L"[文件] %ls"), path.c_str());
+        status_ = std::wstring(i18n::tr(L"已选择: ")) + path;
     }
 
     // Starts the selected method on the selected file.

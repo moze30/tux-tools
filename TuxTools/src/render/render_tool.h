@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include <string>
+#include "i18n.h"
 
 namespace render {
 
@@ -66,7 +67,7 @@ public:
     // now records a line here as it happens, and the shell writes it out. The
     // base implementation reports the generic case so a renderer that has not
     // been instrumented yet still says something.
-    virtual std::wstring failureReason() const { return L"未知原因"; }
+    virtual std::wstring failureReason() const { return i18n::tr(L"未知原因"); }
 };
 
 Tool* createDx9();

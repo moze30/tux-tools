@@ -19,6 +19,7 @@
 #include <windowsx.h>
 
 #include <string>
+#include "i18n.h"
 
 namespace ui {
 
@@ -36,7 +37,7 @@ struct SectionData {
 
 struct SearchData {
     std::wstring text;
-    std::wstring placeholder = L"搜索属性...";
+    std::wstring placeholder = i18n::tr(L"搜索属性...");
     bool focused = false;
 };
 
@@ -673,10 +674,10 @@ HWND createValueList(HWND parent, HINSTANCE instance, int id) {
     // font, visibly smaller than every other label on screen.
     LVCOLUMNW col = {};
     col.mask = LVCF_TEXT | LVCF_WIDTH;
-    col.pszText = const_cast<LPWSTR>(L"属性");
+    col.pszText = const_cast<LPWSTR>(i18n::tr(L"属性"));
     col.cx = 300;
     ListView_InsertColumn(list, 0, &col);
-    col.pszText = const_cast<LPWSTR>(L"值");
+    col.pszText = const_cast<LPWSTR>(i18n::tr(L"值"));
     col.cx = 400;
     ListView_InsertColumn(list, 1, &col);
 
