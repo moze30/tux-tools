@@ -299,7 +299,6 @@ void drawListHeaderItem(HDC dc, HWND header, int index) {
     RECT bottom = {itemRc.left, itemRc.bottom - 1, itemRc.right, itemRc.bottom};
     fillRect(dc, bottom, theme::kDivider);
 }
-
 LRESULT CALLBACK valueListSubclass(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                    UINT_PTR /*ref*/, DWORD_PTR refData) {
     ValueData* data = reinterpret_cast<ValueData*>(refData);
@@ -330,13 +329,6 @@ LRESULT CALLBACK valueListSubclass(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         case WM_NCDESTROY:
             delete data;
             break;
-        case WM_NCCALCSIZE:
-            // Remove the list view's default border so the table sits flush in
-            // the content card (Docker-style, separators only).
-            if (wParam) return 0;
-            break;
-        case WM_NCPAINT:
-            return 0;
         case WM_NOTIFY: {
             LPNMHDR hdr = reinterpret_cast<LPNMHDR>(lParam);
             if (hdr->code != NM_CUSTOMDRAW) return 0;
@@ -399,6 +391,14 @@ LRESULT CALLBACK valueListSubclass(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             fillRect(reinterpret_cast<HDC>(wParam), rc, theme::kContentBg);
             return 1;
         }
+        case WM_SIZE:
+            // The two columns divide whatever width the control has, and the
+            // scrollbar takes a slice of that whenever it appears. Without this
+            // the widths are only correct at the moment the rows were set, and a
+            // resize leaves them either short of the edge or wide enough to
+            // summon a horizontal scrollbar of their own.
+            valueListResizeColumns(hwnd);
+            break;
     }
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
@@ -536,9 +536,23 @@ void searchBoxSetText(HWND hwnd, const std::wstring& text) {
 }
 
 HWND createValueList(HWND parent, HINSTANCE instance, int id) {
+    // WS_VSCROLL is what the table needs, and there is a reason it has to be
+    // asked for here rather than inherited.
+    //
+    // The control's non-client area is removed so the table sits flush in the
+    // content card, and the built-in scrollbar lives in that area; something had
+    // to put it back. A hand-drawn bar was tried first and abandoned: it had to
+    // guess its own hit rectangle from the client area while the control's real
+    // geometry — the header sitting on the top of the client rectangle — meant
+    // the guess was off by the header's height, so the pointer had to be moved
+    // sideways before a press registered. It also only moved a row at a time.
+    // The system's own bar has neither problem, so the table uses it and pays
+    // for it with a permanent gutter, which is the honest cost of a control
+    // that behaves the way the pointer expects.
     HWND list = CreateWindowExW(0, WC_LISTVIEWW, L"",
-                                WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL |
-                                    LVS_SHOWSELALWAYS | LVS_NOSORTHEADER,
+                                WS_CHILD | WS_VISIBLE | WS_VSCROLL | LVS_REPORT |
+                                    LVS_SINGLESEL | LVS_SHOWSELALWAYS |
+                                    LVS_NOSORTHEADER,
                                 0, 0, 0, 0, parent,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                 instance, nullptr);
@@ -627,13 +641,27 @@ void valueListSetRows(HWND hwnd, const std::vector<ValueRow>& rows) {
 void valueListResizeColumns(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
+
+    // The vertical scrollbar's width comes off the top before the two columns
+    // are divided.
+    //
+    // This is not optional. The bar is a child of the client area, so the client
+    // rectangle does not shrink when it appears; sizing the columns to the full
+    // client width therefore leaves them summing to more than the space that is
+    // actually left once the bar shows up, and the list answers that by putting
+    // up a horizontal scrollbar as well. Reserving the width unconditionally
+    // also keeps the columns from shifting by seventeen pixels every time the
+    // bar comes and goes.
+    const int usable = rc.right - GetSystemMetrics(SM_CXVSCROLL);
+
     // The property-name column holds a name, so its floor follows the text
     // size: at 160% a 160-pixel column would ellipsise most of them.
-    int nameWidth = rc.right * 42 / 100;
+    int nameWidth = usable * 42 / 100;
     const int minNameWidth = theme::metric(160);
     if (nameWidth < minNameWidth) nameWidth = minNameWidth;
+    if (nameWidth > usable) nameWidth = usable;
     ListView_SetColumnWidth(hwnd, 0, nameWidth);
-    ListView_SetColumnWidth(hwnd, 1, rc.right - nameWidth - 4);
+    ListView_SetColumnWidth(hwnd, 1, usable - nameWidth);
 }
 
 }  // namespace ui
