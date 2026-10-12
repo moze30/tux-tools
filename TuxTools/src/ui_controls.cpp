@@ -52,26 +52,72 @@ SearchData* searchData(HWND hwnd) {
     return reinterpret_cast<SearchData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 }
 
-HFONT cachedFont(int designPx, bool semibold) {
-    static HFONT body = nullptr;
-    static HFONT bodyStrong = nullptr;
-    if (semibold) {
-        if (!bodyStrong) {
-            bodyStrong = CreateFontW(-dpi::scale(designPx), 0, 0, 0, FW_SEMIBOLD,
-                                     FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                                     CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
-                                     L"Segoe UI Variable Text");
+// One cached font per (size, weight, text-scale) triple, made on first use.
+// There are only a handful in the whole program, so a small fixed table is
+// simpler than a map and avoids allocating during a paint.
+//
+// The generation is part of the key rather than a reason to clear the table:
+// when the user changes the text size the old entries are simply abandoned and
+// the next lookup at that size makes a new face. Keeping them costs a few font
+// objects and saves rebuilding everything on every step of the slider.
+struct FontEntry {
+    int size;
+    bool strong;
+    int generation;
+    HFONT font;
+};
+
+const int kFontCacheSlots = 16;
+FontEntry g_fontCache[kFontCacheSlots] = {};
+int g_fontCacheUsed = 0;
+
+}  // namespace
+
+// Drops every face made for an older text size. Faces of the current size are
+// kept: the value list still has one selected, and deleting it underneath the
+// control would leave it drawing with a dead object.
+void resetFontCache() {
+    const int generation = theme::fontGeneration();
+    int write = 0;
+    for (int read = 0; read < g_fontCacheUsed; ++read) {
+        FontEntry& entry = g_fontCache[read];
+        if (entry.generation == generation) {
+            g_fontCache[write++] = entry;
+        } else if (entry.font) {
+            DeleteObject(entry.font);
         }
-        return bodyStrong;
     }
-    if (!body) {
-        body = CreateFontW(-dpi::scale(designPx), 0, 0, 0, FW_NORMAL,
-                           FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
-                           L"Segoe UI Variable Text");
-    }
-    return body;
+    for (int i = write; i < g_fontCacheUsed; ++i) g_fontCache[i] = {};
+    g_fontCacheUsed = write;
 }
+
+HFONT font(int designPx, bool semibold) {
+    const int generation = theme::fontGeneration();
+    for (int i = 0; i < g_fontCacheUsed; ++i) {
+        if (g_fontCache[i].size == designPx && g_fontCache[i].strong == semibold &&
+            g_fontCache[i].generation == generation) {
+            return g_fontCache[i].font;
+        }
+    }
+
+    HFONT made = CreateFontW(-theme::font(designPx), 0, 0, 0,
+                             semibold ? FW_SEMIBOLD : FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                             L"Segoe UI Variable Text");
+    if (g_fontCacheUsed < kFontCacheSlots) {
+        FontEntry& slot = g_fontCache[g_fontCacheUsed++];
+        slot.size = designPx;
+        slot.strong = semibold;
+        slot.generation = generation;
+        slot.font = made;
+    }
+    return made;
+}
+
+namespace {
+
+HFONT cachedFont(int designPx, bool semibold) { return font(designPx, semibold); }
 
 void fillRect(HDC dc, const RECT& rc, COLORREF color) {
     HBRUSH brush = CreateSolidBrush(color);
@@ -245,7 +291,7 @@ void drawListHeaderItem(HDC dc, HWND header, int index) {
     item.cchTextMax = 128;
     Header_GetItem(header, index, &item);
 
-    HFONT font = cachedFont(theme::kFontBody, true);
+    HFONT font = cachedFont(theme::kFontTable, true);
     RECT textRc = itemRc;
     textRc.left += theme::kSpaceM;
     drawTextClipped(dc, text, textRc, theme::kTableHeaderText, font);
@@ -499,6 +545,10 @@ HWND createValueList(HWND parent, HINSTANCE instance, int id) {
     ListView_SetExtendedListViewStyle(list,
         LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
 
+    // The rows are drawn by the subclass, but the font has to be set on the
+    // control: it is what decides the row height and the left offset the list
+    // computes for each item. Leaving it unset gave the table the default system
+    // font, visibly smaller than every other label on screen.
     LVCOLUMNW col = {};
     col.mask = LVCF_TEXT | LVCF_WIDTH;
     col.pszText = const_cast<LPWSTR>(L"属性");
@@ -508,9 +558,31 @@ HWND createValueList(HWND parent, HINSTANCE instance, int id) {
     col.cx = 400;
     ListView_InsertColumn(list, 1, &col);
 
+    // After the columns exist: this sets the font on the list and the header and
+    // then divides the width between the two columns.
+    valueListApplyFont(list);
+
     SetWindowSubclass(list, valueListSubclass, 1,
                       reinterpret_cast<DWORD_PTR>(new ValueData()));
     return list;
+}
+
+void valueListApplyFont(HWND valueList) {
+    if (!valueList) return;
+    // TRUE so the control redraws itself: the row height is derived from this
+    // font, so without the redraw the rows keep their old size until something
+    // else happens to invalidate them.
+    SendMessageW(valueList, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(font(theme::kFontTable, false)), TRUE);
+    // The header is a separate control and derives its own height from its
+    // font, so it has to be told separately or it stays at the old size while
+    // the rows grow below it.
+    HWND header = ListView_GetHeader(valueList);
+    if (header) {
+        SendMessageW(header, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(font(theme::kFontTable, true)), TRUE);
+    }
+    valueListResizeColumns(valueList);
 }
 
 void sectionListSetItems(HWND hwnd, const std::vector<std::wstring>& titles,
@@ -555,8 +627,11 @@ void valueListSetRows(HWND hwnd, const std::vector<ValueRow>& rows) {
 void valueListResizeColumns(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
+    // The property-name column holds a name, so its floor follows the text
+    // size: at 160% a 160-pixel column would ellipsise most of them.
     int nameWidth = rc.right * 42 / 100;
-    if (nameWidth < 160) nameWidth = 160;
+    const int minNameWidth = theme::metric(160);
+    if (nameWidth < minNameWidth) nameWidth = minNameWidth;
     ListView_SetColumnWidth(hwnd, 0, nameWidth);
     ListView_SetColumnWidth(hwnd, 1, rc.right - nameWidth - 4);
 }

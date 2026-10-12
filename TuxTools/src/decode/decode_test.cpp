@@ -62,12 +62,19 @@ void frameRectLocal(HDC dc, const RECT& rc, COLORREF colour) {
 
 // A fixed-pitch face for the log: decoder messages are columns of hex and
 // dimensions, which are far easier to scan when the characters line up.
+//
+// The face is cached, but the cache is keyed on the text-size generation so the
+// log follows the user's setting like the rest of the interface. One stale
+// face is kept alive until the next call rather than deleted here, because a
+// paint may still hold it selected.
 HFONT monoFont() {
     static HFONT font = nullptr;
-    if (!font) {
-        font = CreateFontW(-dpi::scale(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    static int generation = -1;
+    if (!font || generation != theme::fontGeneration()) {
+        font = CreateFontW(-theme::font(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                            CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+        generation = theme::fontGeneration();
     }
     return font;
 }

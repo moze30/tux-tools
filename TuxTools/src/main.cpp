@@ -21,6 +21,7 @@
 
 #include "collectors.h"
 #include "theme.h"
+#include "settings.h"
 #include "ui_controls.h"
 #include "render/render_tool.h"
 #include "decode/decode_test.h"
@@ -28,6 +29,7 @@
 #include "resource.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -124,14 +126,43 @@ const int kSwitchMarginDesign = 12;
 const int kSwitchHeightDesign = 34;
 const int kSwitchGapDesign = 8;
 
-int searchWidth() { return dpi::scale(kSearchWidthDesign); }
-int searchHeight() { return dpi::scale(kSearchHeightDesign); }
+int searchWidth() { return theme::textBox(kSearchWidthDesign, theme::kFontBody); }
+// The search box is a box with one line of text in it, so it follows the type.
+int searchHeight() { return theme::metric(kSearchHeightDesign); }
+// Its width has to fit the placeholder, which is a line of the body face.
+int searchWidthScaled() { return theme::textBox(kSearchWidthDesign, theme::kFontBody); }
 int searchTop() { return (theme::kTopBarHeight - searchHeight()) / 2; }
 int searchLeft() { return dpi::scale(kSearchLeftDesign); }
-int captionButtonWidth() { return dpi::scale(kCaptionButtonWidthDesign); }
+// The glyphs are drawn at a fixed size, but the bar they sit in grows, so the
+// buttons grow with it or three of them stop filling the right-hand end.
+int captionButtonWidth() { return theme::textBox(kCaptionButtonWidthDesign, theme::kFontBody); }
 int resizeBorder() { return dpi::scale(kResizeBorderDesign); }
 
 enum CaptionButton { kCaptionNone = -1, kCaptionMin = 0, kCaptionMax = 1, kCaptionClose = 2 };
+
+// Every interactive element on the settings card. The card is a list of rows
+// with one control each, so one hit rectangle and one hot/pressed pair per item
+// covers all of them; adding a row is one entry here and one case at each use.
+// Tool-switcher commands. They are the popup menu's ids and also what a
+// WM_COMMAND carrying a menu id is understood to mean.
+enum AppCommand {
+    kCmdToolCaps = 1,
+    kCmdToolTest = 2,
+    kCmdToolDecode = 3,
+    kCmdSettings = 4,
+    kCmdAbout = 5,
+    kCmdLast = kCmdAbout
+};
+
+enum SettingsItem {
+    kSettingsNone = -1,
+    kSettingsScaleDown = 0,
+    kSettingsScaleUp,
+    kSettingsScaleReset,
+    kSettingsLog,
+    kSettingsPath,
+    kSettingsItemCount
+};
 
 struct AppState {
     Api api = Api::OpenGL;
@@ -176,11 +207,15 @@ struct AppState {
     bool aboutVisible = false;
     // The settings card, same construction as the about box.
     bool settingsVisible = false;
-    RECT settingsLogRect = {};      // the debug toggle row
-    bool settingsLogHot = false;
-    bool settingsLogPressed = false;
-    RECT settingsPathRect = {};     // click to open the folder
-    bool settingsPathHot = false;
+    RECT settingsRects[kSettingsItemCount] = {};
+    int settingsHot = kSettingsNone;
+    int settingsPressed = kSettingsNone;
+    // Where the card's top edge sits while it is open, or -1 when it still has
+    // to be placed. The card is tall enough that its controls sit where the
+    // pointer already is, so it is placed once, from the client size, and then
+    // left there: re-centring it on every change would slide the very button
+    // the user is clicking out from under the pointer.
+    int settingsCardTop = -1;
     bool aboutCloseHot = false;
     bool aboutLinkHot = false;
     RECT aboutCloseRect = {};
@@ -717,6 +752,21 @@ void updateStatus(HWND hwnd) {
 
 // Tool switcher menu: pick between the driver capability viewer and the
 // Direct3D driver test.
+// Carries out one of the tool-switcher commands. Both paths in reach the same
+// ids: the popup menu below, and a WM_COMMAND carrying a menu id. Routing both
+// through here keeps the two from drifting apart, and gives the switcher the
+// same scriptable surface the command line already offers.
+void runAppCommand(HWND hwnd, int cmd) {
+    switch (cmd) {
+        case kCmdToolCaps: selectTool(hwnd, ToolKind::DriverCaps); break;
+        case kCmdToolTest: selectTool(hwnd, ToolKind::DriverTest); break;
+        case kCmdToolDecode: selectTool(hwnd, ToolKind::DecodeTest); break;
+        case kCmdSettings: setSettingsVisible(hwnd, true); break;
+        case kCmdAbout: setAboutVisible(hwnd, true); break;
+        default: break;
+    }
+}
+
 void showToolMenu(HWND hwnd) {
     AppState* s = state(hwnd);
     if (!s) return;
@@ -725,12 +775,12 @@ void showToolMenu(HWND hwnd) {
     UINT capsFlags = MF_STRING | (s->tool == ToolKind::DriverCaps ? MF_CHECKED : 0);
     UINT testFlags = MF_STRING | (s->tool == ToolKind::DriverTest ? MF_CHECKED : 0);
     UINT decodeFlags = MF_STRING | (s->tool == ToolKind::DecodeTest ? MF_CHECKED : 0);
-    AppendMenuW(menu, capsFlags, 1, L"驱动能力查看器");
-    AppendMenuW(menu, testFlags, 2, L"驱动测试");
-    AppendMenuW(menu, decodeFlags, 3, L"解码测试");
+    AppendMenuW(menu, capsFlags, kCmdToolCaps, L"驱动能力查看器");
+    AppendMenuW(menu, testFlags, kCmdToolTest, L"驱动测试");
+    AppendMenuW(menu, decodeFlags, kCmdToolDecode, L"解码测试");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 4, L"设置...");
-    AppendMenuW(menu, MF_STRING, 5, L"关于 Tux-Tools...");
+    AppendMenuW(menu, MF_STRING, kCmdSettings, L"设置...");
+    AppendMenuW(menu, MF_STRING, kCmdAbout, L"关于 Tux-Tools...");
 
     RECT r = s->toolButtonRect;
     POINT pt = {r.left, r.bottom};
@@ -739,14 +789,7 @@ void showToolMenu(HWND hwnd) {
                              pt.x, pt.y, 0, hwnd, nullptr);
     DestroyMenu(menu);
 
-    if (cmd == 1) selectTool(hwnd, ToolKind::DriverCaps);
-    else if (cmd == 2) selectTool(hwnd, ToolKind::DriverTest);
-    else if (cmd == 3) selectTool(hwnd, ToolKind::DecodeTest);
-    else if (cmd == 4) {
-        setSettingsVisible(hwnd, true);
-    } else if (cmd == 5) {
-        setAboutVisible(hwnd, true);
-    }
+    runAppCommand(hwnd, cmd);
 }
 
 void selectTool(HWND hwnd, ToolKind tool) {
@@ -851,14 +894,16 @@ void updateTabRects(HWND hwnd) {
     int total = theme::kSidebarWidth - margin * 2;
     int halfWidth = (total - gap) / 2;
     int top = theme::kTopBarHeight + margin;
-    int height = dpi::scale(kSwitchHeightDesign);
+    int height = theme::metric(kSwitchHeightDesign);
     s->glSwitchRect = {margin, top, margin + halfWidth, top + height};
     s->vkSwitchRect = {margin + halfWidth + gap, top, margin + total, top + height};
 
     // Tool switcher button in the top bar, placed to the left of the caption
     // buttons (minimize / maximize / close).
-    int toolWidth = dpi::scale(kToolButtonWidthDesign);
-    int toolHeight = dpi::scale(kToolButtonHeightDesign);
+    // The switcher holds the longest label in the program ("驱动能力查看器"), so
+    // its width tracks the type or the label runs out of its own button.
+    int toolWidth = theme::textBox(kToolButtonWidthDesign, theme::kFontBody);
+    int toolHeight = theme::metric(kToolButtonHeightDesign);
     int toolTop = (theme::kTopBarHeight - toolHeight) / 2;
     int captionsLeft = rc.right - captionButtonWidth() * 3;
     s->toolButtonRect = {captionsLeft - theme::kSpaceS - toolWidth, toolTop,
@@ -890,8 +935,9 @@ void layoutChildren(HWND hwnd) {
     // Search box in the top bar.
     MoveWindow(s->search, searchLeft(), searchTop(), searchWidth(), searchHeight(), TRUE);
 
-    // Value table fills the content area below the page header.
-    int pageHeader = 64;
+    // Value table fills the content area below the page header. The header
+    // band is what holds the page title, so it scales with the type.
+    int pageHeader = theme::metric(64);
     int tableTop = topBar + pageHeader;
     int tableLeft = theme::kSidebarWidth + theme::kSpaceXL;
     int tableBottom = contentBottom - theme::kSpaceL;
@@ -926,9 +972,11 @@ void layoutChildren(HWND hwnd) {
     }
 
     // Run/stop button in the page header, right-aligned.
-    int runW = dpi::scale(96);
-    int runH = dpi::scale(30);
-    int runTop = topBar + dpi::scale(14);
+    int runW = theme::metric(96);
+    int runH = theme::metric(30);
+    // The header band is centred on the taller of the two: the title above and
+    // the button here share it, and the button is what has to fit.
+    int runTop = topBar + (pageHeader - runH) / 2;
     s->runButtonRect = {rc.right - theme::kSpaceXL - runW, runTop,
                         rc.right - theme::kSpaceXL, runTop + runH};
 
@@ -942,7 +990,9 @@ void layoutChildren(HWND hwnd) {
         int vTop = topBar + pageHeader;
         int vLeft = theme::kSidebarWidth + theme::kSpaceXL;
         int vBottom = contentBottom - theme::kSpaceL;
-        int logH = dpi::scale(140);
+        // The log is a fixed number of lines tall, so it grows with the type
+        // rather than showing fewer and fewer of them.
+        int logH = theme::metric(140);
         int vHeight = (vBottom - vTop) - logH - theme::kSpaceM;
         if (vHeight < dpi::scale(80)) vHeight = dpi::scale(80);
         s->videoRect = {vLeft, vTop, rc.right - theme::kSpaceXL, vTop + vHeight};
@@ -1131,8 +1181,10 @@ void paintContent(HWND hwnd, HDC dc, const RECT& client) {
     fillRect(dc, content, theme::kContentBg);
 
     if (s && s->tool == ToolKind::DriverTest) {
-        RECT titleRc = {theme::kSidebarWidth + theme::kSpaceXL, theme::kTopBarHeight + 14,
-                        s->runButtonRect.left - theme::kSpaceM, theme::kTopBarHeight + 42};
+        RECT titleRc = {theme::kSidebarWidth + theme::kSpaceXL,
+                        theme::kTopBarHeight + theme::metric(14),
+                        s->runButtonRect.left - theme::kSpaceM,
+                        theme::kTopBarHeight + theme::metric(42)};
         drawText(dc, std::wstring(L"驱动测试 - ") + dxApiLabel(s->dxApi), titleRc,
                  theme::kPageTitle, s->titleFont);
 
@@ -1152,8 +1204,10 @@ void paintContent(HWND hwnd, HDC dc, const RECT& client) {
     }
 
     if (s && s->tool == ToolKind::DecodeTest) {
-        RECT titleRc = {theme::kSidebarWidth + theme::kSpaceXL, theme::kTopBarHeight + 14,
-                        s->openButtonRect.left - theme::kSpaceM, theme::kTopBarHeight + 42};
+        RECT titleRc = {theme::kSidebarWidth + theme::kSpaceXL,
+                        theme::kTopBarHeight + theme::metric(14),
+                        s->openButtonRect.left - theme::kSpaceM,
+                        theme::kTopBarHeight + theme::metric(42)};
         std::wstring title = L"解码测试";
         if (s->decoder) title += std::wstring(L" - ") + decode::methodName(s->decoder->method());
         drawText(dc, title, titleRc, theme::kPageTitle, s->titleFont);
@@ -1188,8 +1242,10 @@ void paintContent(HWND hwnd, HDC dc, const RECT& client) {
     }
 
     // Page header: current section title.
-    RECT titleRc = {theme::kSidebarWidth + theme::kSpaceXL, theme::kTopBarHeight + 14,
-                    client.right - theme::kSpaceXL, theme::kTopBarHeight + 42};
+    RECT titleRc = {theme::kSidebarWidth + theme::kSpaceXL,
+                    theme::kTopBarHeight + theme::metric(14),
+                    client.right - theme::kSpaceXL,
+                    theme::kTopBarHeight + theme::metric(42)};
     std::wstring title = L"属性";
     if (s) {
         viewer::Report& report = currentReport(s);
@@ -1253,8 +1309,8 @@ void setOverlayVisible(HWND hwnd, bool visible) {
     if (!s) return;
     s->aboutCloseHot = false;
     s->aboutLinkHot = false;
-    s->settingsLogHot = false;
-    s->settingsPathHot = false;
+    s->settingsHot = kSettingsNone;
+    s->settingsPressed = kSettingsNone;
 
     const int show = visible ? SW_HIDE : SW_SHOW;
     if (s->sectionList) ShowWindow(s->sectionList, show);
@@ -1282,10 +1338,13 @@ void setOverlayVisible(HWND hwnd, bool visible) {
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
+// Both cards are drawn into this window, over the same area, so only one can be
+// up at a time: opening either dismisses the other rather than stacking the two.
 void setAboutVisible(HWND hwnd, bool visible) {
     AppState* s = state(hwnd);
     if (!s) return;
     s->aboutVisible = visible;
+    if (visible) s->settingsVisible = false;
     setOverlayVisible(hwnd, visible || s->settingsVisible);
 }
 
@@ -1293,6 +1352,12 @@ void setSettingsVisible(HWND hwnd, bool visible) {
     AppState* s = state(hwnd);
     if (!s) return;
     s->settingsVisible = visible;
+    if (visible) {
+        s->aboutVisible = false;
+        // Re-place the card on every open, so it comes up centred for the text
+        // size in effect and then stays put for as long as it is up.
+        s->settingsCardTop = -1;
+    }
     setOverlayVisible(hwnd, visible || s->aboutVisible);
 }
 
@@ -1313,29 +1378,29 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
 
     dimClient(dc, client);
 
-    const int cardW = dpi::scale(560);
-    const int cardH = dpi::scale(432);
+    const int cardW = theme::zoom(560);
+    const int cardH = theme::zoom(432);
     RECT card = {(client.right - cardW) / 2, (client.bottom - cardH) / 2,
                  (client.right - cardW) / 2 + cardW,
                  (client.bottom - cardH) / 2 + cardH};
-    if (card.top < 0) { card.top = dpi::scale(8); card.bottom = card.top + cardH; }
+    if (card.top < 0) { card.top = theme::zoom(8); card.bottom = card.top + cardH; }
 
     // Card with a soft shadow, then the accent stripe down the left edge that
     // ties it to the top bar.
     RECT shadow = card;
-    OffsetRect(&shadow, dpi::scale(3), dpi::scale(3));
+    OffsetRect(&shadow, theme::zoom(3), theme::zoom(3));
     fillRoundRect(dc, shadow, theme::kRadiusCard, RGB(0xC8, 0xCC, 0xD2));
     fillRoundRect(dc, card, theme::kRadiusCard, RGB(0xFF, 0xFF, 0xFF));
 
-    const int pad = dpi::scale(24);
+    const int pad = theme::zoom(24);
     int y = card.top + pad;
 
     // Header: logo, product name, version.
-    const int logoSz = dpi::scale(44);
+    const int logoSz = theme::zoom(44);
     if (s->logo) {
         DrawIconEx(dc, card.left + pad, y, s->logo, logoSz, logoSz, 0, nullptr, DI_NORMAL);
     }
-    RECT nameRc = {card.left + pad + logoSz + dpi::scale(14), y,
+    RECT nameRc = {card.left + pad + logoSz + theme::zoom(14), y,
                    card.right - pad, y + logoSz / 2};
     drawText(dc, kBrandName, nameRc, theme::kPageTitle, s->titleFont);
     RECT verRc = {nameRc.left, y + logoSz / 2, nameRc.right, y + logoSz};
@@ -1343,7 +1408,7 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
              verRc, theme::kPageSubtitle, s->font);
 
     // Close button, top right of the card.
-    const int closeSz = dpi::scale(28);
+    const int closeSz = theme::zoom(28);
     s->aboutCloseRect = {card.right - pad - closeSz, card.top + pad,
                          card.right - pad, card.top + pad + closeSz};
     if (s->aboutCloseHot) {
@@ -1352,8 +1417,8 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
     {
         const int cx = (s->aboutCloseRect.left + s->aboutCloseRect.right) / 2;
         const int cy = (s->aboutCloseRect.top + s->aboutCloseRect.bottom) / 2;
-        const int half = dpi::scale(5);
-        HPEN pen = CreatePen(PS_SOLID, dpi::scale(1), theme::kSidebarMuted);
+        const int half = theme::zoom(5);
+        HPEN pen = CreatePen(PS_SOLID, theme::zoom(1), theme::kSidebarMuted);
         HGDIOBJ oldPen = SelectObject(dc, pen);
         MoveToEx(dc, cx - half, cy - half, nullptr);
         LineTo(dc, cx + half + 1, cy + half + 1);
@@ -1363,24 +1428,24 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
         DeleteObject(pen);
     }
 
-    y += logoSz + dpi::scale(16);
+    y += logoSz + theme::zoom(16);
     {
         RECT line = {card.left + pad, y, card.right - pad, y + 1};
         fillRect(dc, line, theme::kDivider);
     }
-    y += dpi::scale(16);
+    y += theme::zoom(16);
 
     // Summary.
     {
-        RECT r = {card.left + pad, y, card.right - pad, y + dpi::scale(44)};
+        RECT r = {card.left + pad, y, card.right - pad, y + theme::zoom(44)};
         drawText(dc, kAppSummary, r, theme::kTableText, s->font,
                  DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
-        y += dpi::scale(52);
+        y += theme::zoom(52);
     }
 
     // Key/value rows: the label column is fixed so the values line up.
-    const int labelW = dpi::scale(76);
-    const int rowH = dpi::scale(24);
+    const int labelW = theme::zoom(76);
+    const int rowH = theme::zoom(24);
     const auto row = [&](const wchar_t* label, const std::wstring& value,
                          COLORREF valueColour, HFONT valueFont) {
         RECT lr = {card.left + pad, y, card.left + pad + labelW, y + rowH};
@@ -1402,38 +1467,38 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
                         y - rowH * 2};
     if (s->aboutLinkHot) {
         HGDIOBJ oldPen = SelectObject(
-            dc, CreatePen(PS_SOLID, dpi::scale(1), theme::kAccentBorder));
-        int uy = s->aboutLinkRect.bottom - dpi::scale(4);
+            dc, CreatePen(PS_SOLID, theme::zoom(1), theme::kAccentBorder));
+        int uy = s->aboutLinkRect.bottom - theme::zoom(4);
         drawText(dc, kAppRepo, s->aboutLinkRect, theme::kAccentBorder, s->font);
         MoveToEx(dc, s->aboutLinkRect.left, uy, nullptr);
-        LineTo(dc, s->aboutLinkRect.left + dpi::scale(150), uy);
+        LineTo(dc, s->aboutLinkRect.left + theme::zoom(150), uy);
         DeleteObject(SelectObject(dc, oldPen));
     }
 
-    y += dpi::scale(14);
+    y += theme::zoom(14);
     {
         RECT line = {card.left + pad, y, card.right - pad, y + 1};
         fillRect(dc, line, theme::kDivider);
     }
-    y += dpi::scale(14);
+    y += theme::zoom(14);
 
     // Credits. Every project name is a link to its repository, so each one is
     // drawn in the accent colour and highlights on hover. The whole row is the
     // click target rather than the text alone, which is easier to hit.
     {
-        RECT hr = {card.left + pad, y, card.right - pad, y + dpi::scale(20)};
+        RECT hr = {card.left + pad, y, card.right - pad, y + theme::zoom(20)};
         drawText(dc, L"鸣谢", hr, theme::kPageTitle, s->boldFont);
-        y += dpi::scale(24);
+        y += theme::zoom(24);
     }
     for (int i = 0; i < kCreditCount; ++i) {
-        if (y + dpi::scale(30) > card.bottom - dpi::scale(12)) {
+        if (y + theme::zoom(30) > card.bottom - theme::zoom(12)) {
             s->creditRects[i] = {};
             continue;
         }
         // The name column only has to hold a project name; the address needs the
         // rest and is the longest string on the card, so it gets the room.
-        const int nameW = dpi::scale(158);
-        RECT rowRc = {card.left + pad, y, card.right - pad, y + dpi::scale(20)};
+        const int nameW = theme::zoom(158);
+        RECT rowRc = {card.left + pad, y, card.right - pad, y + theme::zoom(20)};
         s->creditRects[i] = rowRc;
 
         // Hover is shown as a tinted background behind the whole row. Swapping
@@ -1443,19 +1508,69 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
         const bool hot = (s->creditHot == i);
         if (hot) {
             RECT pill = rowRc;
-            InflateRect(&pill, -dpi::scale(6), 0);
+            InflateRect(&pill, -theme::zoom(6), 0);
             fillRoundRect(dc, pill, theme::kRadiusControl, theme::kNavSelected);
         }
 
-        RECT nr = {rowRc.left, y, rowRc.left + nameW, y + dpi::scale(18)};
+        RECT nr = {rowRc.left, y, rowRc.left + nameW, y + theme::zoom(18)};
         drawText(dc, kCredits[i].name, nr, theme::kAccent, s->boldFont,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-        RECT dr = {nr.right + dpi::scale(10), y, card.right - pad, y + dpi::scale(18)};
+        RECT dr = {nr.right + theme::zoom(10), y, card.right - pad, y + theme::zoom(18)};
         drawText(dc, kCredits[i].shown, dr, theme::kPageSubtitle, s->font,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        y += dpi::scale(22);
+        y += theme::zoom(22);
     }
+}
+
+// A rounded pill button, the shape the settings card uses for its small
+// controls. Drawn like every other control in the shell: a tint when the pointer
+// is over it and a darker tint while it is held down.
+void drawPillButton(HDC dc, const RECT& rc, const wchar_t* label, HFONT labelFont,
+                    bool hot, bool down, bool enabled) {
+    COLORREF fill = !enabled ? RGB(0xF5, 0xF5, 0xF5)
+                             : (down ? theme::kAccentBorder
+                                     : (hot ? RGB(0xE3, 0xEC, 0xFD)
+                                            : RGB(0xF2, 0xF2, 0xF2)));
+    fillRoundRect(dc, rc, theme::kRadiusControl, fill);
+
+    COLORREF text = enabled ? theme::kTableText : RGB(0xB0, 0xB0, 0xB0);
+    if (enabled && down) text = theme::kTopBarText;
+    else if (enabled && hot) text = theme::kAccentBorder;
+    drawText(dc, label, rc, text, labelFont,
+             DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+// The vertical steps the settings card is built from. They are named rather than
+// inlined because the card's height is the sum of them: computing the height
+// separately from the drawing is how a card ends up clipping its own last row.
+//
+// A row is laid out in two lines - the control, then a hint under it.
+struct SettingsMetrics {
+    int pad;
+    int width;
+    int title;      // heading, rule and the gap before the first row
+    int row;        // a control row, including the gap to its hint
+    int hint;       // one line of hint text
+    int blockGap;   // the separator between two settings
+    int rowGap;     // the gap between the hint and the row after it
+    int path;       // the clickable path line
+};
+
+// The card and everything inside it scale in full - see theme::zoom. A dialog is
+// a fixed piece of content, so the whole of it grows together; growing only the
+// type would leave the hints wider than the card that holds them.
+SettingsMetrics settingsMetrics() {
+    SettingsMetrics m = {};
+    m.pad = theme::zoom(24);
+    m.width = theme::zoom(560);
+    m.title = theme::zoom(38) + theme::zoom(18);
+    m.row = theme::zoom(30);
+    m.hint = theme::zoom(20);
+    m.blockGap = theme::zoom(18);
+    m.rowGap = theme::zoom(4);
+    m.path = theme::zoom(22);
+    return m;
 }
 
 // The settings card. Same frame as the about box; the body is a list of rows,
@@ -1466,75 +1581,166 @@ void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
 
     dimClient(dc, client);
 
-    const int cardW = dpi::scale(560);
-    const int cardH = dpi::scale(300);
-    RECT card = {(client.right - cardW) / 2, (client.bottom - cardH) / 2,
-                 (client.right - cardW) / 2 + cardW,
-                 (client.bottom - cardH) / 2 + cardH};
-    if (card.top < 0) {
-        card.top = dpi::scale(8);
-        card.bottom = card.top + cardH;
+    const SettingsMetrics m = settingsMetrics();
+
+    // Sized from its own content: two control rows, each followed by its hint,
+    // and the path line under them. A larger text size grows the card instead of
+    // clipping the last row. The +1 is the separator's hairline.
+    const int cardH = m.pad * 2 + m.title + (m.row + m.hint) +
+                      (m.blockGap * 2 + 1) + (m.row + m.hint) + m.rowGap + m.path;
+
+    // Placed once and then held: see settingsCardTop. Growing the text size makes
+    // the card taller, and the height is what changes, not the top.
+    if (s->settingsCardTop < 0) {
+        int top = (client.bottom - cardH) / 2;
+        if (top < dpi::scale(8)) top = dpi::scale(8);
+        // The tallest card the setting allows still has to fit the window.
+        if (top + cardH > client.bottom - dpi::scale(8)) {
+            top = client.bottom - dpi::scale(8) - cardH;
+        }
+        if (top < dpi::scale(8)) top = dpi::scale(8);
+        s->settingsCardTop = top;
     }
+    RECT card = {(client.right - m.width) / 2, s->settingsCardTop,
+                 (client.right - m.width) / 2 + m.width,
+                 s->settingsCardTop + cardH};
 
     RECT shadow = card;
     OffsetRect(&shadow, dpi::scale(3), dpi::scale(3));
     fillRoundRect(dc, shadow, theme::kRadiusCard, RGB(0xC8, 0xCC, 0xD2));
     fillRoundRect(dc, card, theme::kRadiusCard, RGB(0xFF, 0xFF, 0xFF));
 
-    const int pad = dpi::scale(24);
+    const int pad = m.pad;
+    const int rowH = m.row;
+    const int hintH = m.hint;
     int y = card.top + pad;
 
-    RECT titleRc = {card.left + pad, y, card.right - pad - dpi::scale(36),
-                    y + dpi::scale(28)};
+    RECT titleRc = {card.left + pad, y, card.right - pad - theme::zoom(36),
+                    y + theme::zoom(28)};
     drawText(dc, L"设置", titleRc, theme::kPageTitle, s->titleFont);
-    y += dpi::scale(38);
+    y += theme::zoom(38);
 
     RECT line = {card.left + pad, y, card.right - pad, y + 1};
     fillRect(dc, line, theme::kDivider);
-    y += dpi::scale(18);
+    y += theme::zoom(18);
+
+    // --- text size ---------------------------------------------------------
+    {
+        RECT labelRc = {card.left + pad, y, card.left + pad + theme::zoom(120),
+                        y + rowH};
+        drawText(dc, L"字体大小", labelRc, theme::kTableText, s->boldFont);
+
+        // A stepper: minus, the value, plus. The row is right-aligned so the
+        // controls sit under the switch on the row below.
+        //
+        // The buttons keep their distance from the pointer by being anchored to
+        // the card's right edge and by the card's top being held while it is
+        // open: growing the text grows the card downwards, so the row being
+        // clicked does not move out from under the pointer.
+        const int btn = theme::zoom(30);
+        const int pctW = theme::zoom(64);
+        const int gap = theme::zoom(8);
+        RECT plusRc = {card.right - pad - btn, y + (rowH - btn) / 2,
+                       card.right - pad, y + (rowH - btn) / 2 + btn};
+        RECT pctRc = {plusRc.left - gap - pctW, y, plusRc.left - gap, y + rowH};
+        RECT minusRc = {pctRc.left - gap - btn, plusRc.top, pctRc.left - gap,
+                        plusRc.bottom};
+        s->settingsRects[kSettingsScaleUp] = plusRc;
+        s->settingsRects[kSettingsScaleDown] = minusRc;
+
+        const bool canDown = theme::textScale() > theme::kTextScaleMin;
+        const bool canUp = theme::textScale() < theme::kTextScaleMax;
+
+        drawPillButton(dc, minusRc, L"-", s->boldFont,
+                       s->settingsHot == kSettingsScaleDown,
+                       s->settingsPressed == kSettingsScaleDown, canDown);
+        drawPillButton(dc, plusRc, L"+", s->boldFont,
+                       s->settingsHot == kSettingsScaleUp,
+                       s->settingsPressed == kSettingsScaleUp, canUp);
+
+        wchar_t value[16] = {0};
+        std::swprintf(value, 16, L"%d%%", theme::textScale());
+        drawText(dc, value, pctRc, theme::kTableText, s->boldFont,
+                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        // The reset button is offered only once the value has moved, so the row
+        // stays quiet by default.
+        if (theme::textScale() != 100) {
+            const int resetW = theme::zoom(52);
+            RECT resetRc = {minusRc.left - gap - resetW, minusRc.top,
+                            minusRc.left - gap, minusRc.bottom};
+            s->settingsRects[kSettingsScaleReset] = resetRc;
+            drawPillButton(dc, resetRc, L"重置", s->font,
+                           s->settingsHot == kSettingsScaleReset,
+                           s->settingsPressed == kSettingsScaleReset, true);
+        } else {
+            s->settingsRects[kSettingsScaleReset] = {};
+        }
+
+        y += rowH;
+        RECT hint = {card.left + pad, y, card.right - pad, y + hintH};
+        drawText(dc, L"调整整个界面的文字大小，立即生效并记住选择。",
+                 hint, theme::kPageSubtitle, s->font);
+        y += hintH;
+    }
+
+    y += m.blockGap;
+    {
+        RECT sep = {card.left + pad, y, card.right - pad, y + 1};
+        fillRect(dc, sep, theme::kDivider);
+    }
+    y += 1 + m.blockGap;
 
     // --- the debug log row -------------------------------------------------
-    RECT labelRc = {card.left + pad, y, card.left + pad + dpi::scale(120),
-                    y + dpi::scale(24)};
-    drawText(dc, L"调试日志", labelRc, theme::kTableText, s->boldFont);
-
-    // A switch, drawn the way the rest of the shell draws its controls.
-    const int swW = dpi::scale(44);
-    const int swH = dpi::scale(24);
-    s->settingsLogRect = {card.right - pad - swW, y, card.right - pad, y + swH};
     {
+        RECT labelRc = {card.left + pad, y, card.left + pad + theme::zoom(120),
+                        y + rowH};
+        drawText(dc, L"调试日志", labelRc, theme::kTableText, s->boldFont);
+
+        // A switch, drawn the way the rest of the shell draws its controls.
+        // The hit rectangle is the whole row rather than the track alone: a
+        // 44-pixel switch is a small target next to a label and a hint.
+        const int swW = theme::zoom(44);
+        const int swH = theme::zoom(24);
+        RECT switchRc = {card.right - pad - swW, y + (rowH - swH) / 2,
+                         card.right - pad, y + (rowH - swH) / 2 + swH};
+        s->settingsRects[kSettingsLog] = {card.left + pad, y, card.right - pad,
+                                          y + rowH};
+
         const bool on = applog::enabled();
         COLORREF track = on ? theme::kAccent
-                            : (s->settingsLogHot ? RGB(0xD8, 0xD8, 0xD8)
-                                                 : RGB(0xE0, 0xE0, 0xE0));
-        fillRoundRect(dc, s->settingsLogRect, swH / 2, track);
-        const int knob = swH - dpi::scale(6);
-        const int knobX = on ? s->settingsLogRect.right - dpi::scale(3) - knob
-                             : s->settingsLogRect.left + dpi::scale(3);
-        RECT k = {knobX, s->settingsLogRect.top + dpi::scale(3), knobX + knob,
-                  s->settingsLogRect.top + dpi::scale(3) + knob};
+                            : (s->settingsHot == kSettingsLog
+                                   ? RGB(0xD8, 0xD8, 0xD8)
+                                   : RGB(0xE0, 0xE0, 0xE0));
+        fillRoundRect(dc, switchRc, swH / 2, track);
+        const int knob = swH - theme::zoom(6);
+        const int knobX = on ? switchRc.right - theme::zoom(3) - knob
+                             : switchRc.left + theme::zoom(3);
+        RECT k = {knobX, switchRc.top + theme::zoom(3), knobX + knob,
+                  switchRc.top + theme::zoom(3) + knob};
         fillRoundRect(dc, k, knob / 2, RGB(0xFF, 0xFF, 0xFF));
-    }
-    y += dpi::scale(30);
 
-    // Hint, and the log path so the user knows where to look. The path line is
-    // itself clickable and opens the folder.
-    {
-        RECT hint = {card.left + pad, y, card.right - pad, y + dpi::scale(20)};
+        y += rowH;
+
+        // Hint, and the log path so the user knows where to look. The path line
+        // is itself clickable and opens the folder.
+        RECT hint = {card.left + pad, y, card.right - pad, y + hintH};
         drawText(dc,
-                 applog::enabled()
-                     ? L"已启用。程序会把运行情况写入下面的文件，便于排查问题。"
-                     : L"启用后会在程序所在目录持续写入日志，便于排查问题。",
+                 on ? L"已启用。程序会把运行情况写入下面的文件，便于排查问题。"
+                    : L"启用后会在程序所在目录持续写入日志，便于排查问题。",
                  hint, theme::kPageSubtitle, s->font);
-        y += dpi::scale(26);
+        y += hintH + m.rowGap;
     }
 
-    RECT pathRc = {card.left + pad, y, card.right - pad, y + dpi::scale(22)};
-    s->settingsPathRect = pathRc;
+    RECT pathRc = {card.left + pad, y, card.right - pad, y + m.path};
+    s->settingsRects[kSettingsPath] = pathRc;
     {
-        const std::wstring shown = applog::path();
+        // The log is what the line names, so before it exists the line points at
+        // the folder that would hold it rather than at a file that is not there.
+        std::wstring shown = applog::path();
         drawText(dc, shown, pathRc,
-                 s->settingsPathHot ? theme::kAccentBorder : theme::kPageSubtitle,
+                 s->settingsHot == kSettingsPath ? theme::kAccentBorder
+                                                 : theme::kPageSubtitle,
                  s->font, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
     }
 
@@ -1560,22 +1766,25 @@ void paintSettings(HWND hwnd, HDC dc, const RECT& client) {
     }
 }
 
+// Every face here goes through theme::font(), which is the monitor's DPI and
+// the user's text size together; that is what makes the setting reach the
+// chrome as well as the table.
 void createFonts(AppState* s) {
     const wchar_t* uiFont = L"Segoe UI Variable Text";
     const wchar_t* displayFont = L"Segoe UI Variable Display";
-    s->font = CreateFontW(-dpi::scale(theme::kFontBody), 0, 0, 0, FW_NORMAL,
+    s->font = CreateFontW(-theme::font(theme::kFontBody), 0, 0, 0, FW_NORMAL,
                           FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, uiFont);
-    s->boldFont = CreateFontW(-dpi::scale(theme::kFontBody), 0, 0, 0, FW_SEMIBOLD,
+    s->boldFont = CreateFontW(-theme::font(theme::kFontBody), 0, 0, 0, FW_SEMIBOLD,
                               FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                               CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, uiFont);
-    s->captionFont = CreateFontW(-dpi::scale(theme::kFontCaption), 0, 0, 0, FW_NORMAL,
+    s->captionFont = CreateFontW(-theme::font(theme::kFontCaption), 0, 0, 0, FW_NORMAL,
                                  FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                                  CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, uiFont);
-    s->titleFont = CreateFontW(-dpi::scale(theme::kFontSubtitle), 0, 0, 0, FW_SEMIBOLD,
+    s->titleFont = CreateFontW(-theme::font(theme::kFontSubtitle), 0, 0, 0, FW_SEMIBOLD,
                                FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, displayFont);
-    s->brandFont = CreateFontW(-dpi::scale(18), 0, 0, 0, FW_SEMIBOLD,
+    s->brandFont = CreateFontW(-theme::font(18), 0, 0, 0, FW_SEMIBOLD,
                                FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, displayFont);
 }
@@ -1620,6 +1829,83 @@ void rebuildFonts(HWND hwnd) {
     createFonts(s);
     loadLogo(s);
     applyFonts(s);
+}
+
+// Puts a new text size into effect everywhere at once: our own faces and the
+// fonts the child controls own are separate sets, and the layout is recomputed
+// because the row heights follow the type. Called after every change, so there
+// is no path where the setting is stored but only half applied.
+void applyTextScale(HWND hwnd) {
+    AppState* s = state(hwnd);
+    if (!s) return;
+
+    // Order matters. The cache is pruned first so no face from the previous size
+    // is handed out again; the list view is told about its new font before the
+    // layout runs, because it derives its row height from it; only then is the
+    // geometry recomputed.
+    ui::resetFontCache();
+    rebuildFonts(hwnd);
+    ui::valueListApplyFont(s->valueList);
+    layoutChildren(hwnd);
+    // layoutChildren uses MoveWindow(..., TRUE), which repaints every child it
+    // places, so the sidebar list, the search box and the status bar all pick up
+    // their new faces without being named here.
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+// Which settings row a point falls on, or kSettingsNone.
+//
+// The rectangles are recorded by the card as it draws, so a row that is not on
+// screen - the reset button before the size has moved - has no rectangle and is
+// never hit.
+int settingsItemFromPoint(AppState* s, POINT pt) {
+    if (!s || !s->settingsVisible) return kSettingsNone;
+    for (int i = 0; i < kSettingsItemCount; ++i) {
+        if (IsRectEmpty(&s->settingsRects[i])) continue;
+        if (PtInRect(&s->settingsRects[i], pt)) return i;
+    }
+    return kSettingsNone;
+}
+
+// Applies one click on the settings card. Kept in one place so the press and the
+// release path cannot drift apart about what a given row does.
+void activateSettingsItem(HWND hwnd, int item) {
+    AppState* s = state(hwnd);
+    if (!s) return;
+
+    // Only the three text-size rows change the type; the other two are ordinary
+    // toggles and a full relayout would be wasted work on them.
+    switch (item) {
+        case kSettingsScaleDown:
+            settings::setTextScale(theme::textScale() - theme::kTextScaleStep);
+            applyTextScale(hwnd);
+            return;
+        case kSettingsScaleUp:
+            settings::setTextScale(theme::textScale() + theme::kTextScaleStep);
+            applyTextScale(hwnd);
+            return;
+        case kSettingsScaleReset:
+            settings::resetTextScale();
+            applyTextScale(hwnd);
+            return;
+        case kSettingsLog:
+            applog::setEnabled(!applog::enabled());
+            applog::write(L"设置：调试日志 %ls", applog::enabled() ? L"开" : L"关");
+            break;
+        case kSettingsPath: {
+            // Opening the folder is the useful next step after turning logging
+            // on, so the path line does that.
+            std::wstring dir = applog::path();
+            const size_t slash = dir.find_last_of(L"\\/");
+            if (slash != std::wstring::npos) dir.erase(slash);
+            ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr,
+                          SW_SHOWNORMAL);
+            return;
+        }
+        default:
+            return;
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1777,6 +2063,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_SIZE: {
+            // A resize may leave the anchored settings card off the screen, so
+            // the next paint places it again from the new client size.
+            if (s && s->settingsVisible) s->settingsCardTop = -1;
             layoutChildren(hwnd);
             if (s && s->tool == ToolKind::DriverTest && s->rendererReady && s->renderer) {
                 s->renderer->resize(s->renderHostRect.right - s->renderHostRect.left,
@@ -1810,7 +2099,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             int code = HIWORD(wParam);
-            if (id == ID_SEARCH && code == EN_CHANGE) {
+            // A menu command arrives with no originating window; a control
+            // notification carries one. That is what tells the two apart, since
+            // the ids come from different ranges but are not disjoint.
+            if (lParam == 0) {
+                if (id >= kCmdToolCaps && id <= kCmdLast) runAppCommand(hwnd, id);
+            } else if (id == ID_SEARCH && code == EN_CHANGE) {
                 updateValueList(hwnd);
             } else if (id == ID_SECTION_LIST && code == LBN_SELCHANGE) {
                 updateValueList(hwnd);
@@ -1833,10 +2127,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 const bool closeHot = PtInRect(&s->aboutCloseRect, pt) != 0;
                 const bool linkHot = s->aboutVisible &&
                                      PtInRect(&s->aboutLinkRect, pt) != 0;
-                const bool logHot = s->settingsVisible &&
-                                    PtInRect(&s->settingsLogRect, pt) != 0;
-                const bool pathHot = s->settingsVisible &&
-                                     PtInRect(&s->settingsPathRect, pt) != 0;
+
+                // Which settings row the pointer is over, or kSettingsNone.
+                const int settingsHot = settingsItemFromPoint(s, pt);
 
                 // Which credited project the pointer is over, or -1. Each name
                 // is a link, so each needs its own hover state.
@@ -1851,13 +2144,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
                 if (closeHot != s->aboutCloseHot || linkHot != s->aboutLinkHot ||
-                    logHot != s->settingsLogHot || pathHot != s->settingsPathHot ||
-                    creditHot != s->creditHot) {
+                    settingsHot != s->settingsHot || creditHot != s->creditHot) {
                     s->aboutCloseHot = closeHot;
                     s->aboutLinkHot = linkHot;
                     s->creditHot = creditHot;
-                    s->settingsLogHot = logHot;
-                    s->settingsPathHot = pathHot;
+                    s->settingsHot = settingsHot;
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
                 return 0;
@@ -1890,7 +2181,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (openHot != s->openButtonHot || runHotDecode != s->runButtonHot) {
                     s->openButtonHot = openHot;
                     s->runButtonHot = runHotDecode;
-                    RECT header = {0, 0, 600000, theme::kTopBarHeight + dpi::scale(64)};
+                    RECT header = {0, 0, 600000, theme::kTopBarHeight + theme::metric(64)};
                     InvalidateRect(hwnd, &header, FALSE);
                 }
             }
@@ -1914,12 +2205,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_MOUSELEAVE:
             if (s && (s->apiHot != -1 || s->captionHot != kCaptionNone || s->toolHot ||
                       s->runButtonHot || s->aboutCloseHot || s->aboutLinkHot ||
-                      s->settingsLogHot || s->settingsPathHot || s->creditHot >= 0)) {
+                      s->settingsHot != kSettingsNone || s->creditHot >= 0)) {
                 s->aboutCloseHot = false;
                 s->aboutLinkHot = false;
                 s->creditHot = -1;
-                s->settingsLogHot = false;
-                s->settingsPathHot = false;
+                s->settingsHot = kSettingsNone;
                 s->apiHot = -1;
                 s->captionHot = kCaptionNone;
                 s->toolHot = false;
@@ -1952,18 +2242,22 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // The about overlay is modal: while it is up it swallows every
             // press, so nothing behind it can be operated by accident.
             if (s->aboutVisible || s->settingsVisible) {
-                if (s->settingsVisible && PtInRect(&s->settingsLogRect, pt)) {
-                    s->settingsLogPressed = true;
+                // The row is resolved from the point, not from the hovered row:
+                // this runs on a press that may have been posted without a
+                // preceding mouse-move, and a press has to land where it was
+                // aimed regardless of what the hover state happens to say.
+                const int item = settingsItemFromPoint(s, pt);
+                if (item == kSettingsPath) {
+                    // Opening the folder rather than changing a setting, so it
+                    // acts on press and has no held-down state.
+                    activateSettingsItem(hwnd, kSettingsPath);
+                } else if (item != kSettingsNone) {
+                    // A button or a switch: which one it is is decided on release,
+                    // so that dragging off cancels the press the way the rest of
+                    // the shell behaves.
+                    s->settingsPressed = item;
                     SetCapture(hwnd);
                     InvalidateRect(hwnd, nullptr, FALSE);
-                } else if (s->settingsVisible && PtInRect(&s->settingsPathRect, pt)) {
-                    // Opening the folder is the useful next step after turning
-                    // logging on, so the path line does that.
-                    std::wstring dir = applog::path();
-                    const size_t slash = dir.find_last_of(L"\\/");
-                    if (slash != std::wstring::npos) dir.erase(slash);
-                    ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr,
-                                  SW_SHOWNORMAL);
                 } else if (s->aboutVisible && PtInRect(&s->aboutLinkRect, pt)) {
                     openRepository();
                 } else if (s->aboutVisible && s->creditHot >= 0 &&
@@ -2023,13 +2317,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (!s) return 0;
             if (s->aboutVisible || s->settingsVisible) {
                 POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-                if (s->settingsLogPressed) {
-                    s->settingsLogPressed = false;
+                if (s->settingsPressed != kSettingsNone) {
+                    const int pressed = s->settingsPressed;
+                    s->settingsPressed = kSettingsNone;
                     ReleaseCapture();
-                    if (PtInRect(&s->settingsLogRect, pt)) {
-                        applog::setEnabled(!applog::enabled());
-                        applog::write(L"设置：调试日志 %ls",
-                                      applog::enabled() ? L"开" : L"关");
+                    // Releasing over the control that was pressed is what
+                    // commits it; letting go anywhere else is a cancel.
+                    if (pressed < kSettingsItemCount &&
+                        PtInRect(&s->settingsRects[pressed], pt)) {
+                        activateSettingsItem(hwnd, pressed);
                     }
                     InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
@@ -2175,7 +2471,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     // The log is opened before anything else so that a failure during startup is
     // itself recorded. Nothing is written when the option is off.
     applog::init();
+    // The saved text size is applied before the window exists so the first frame
+    // is already drawn at the size the user chose, instead of opening at the
+    // design size and jumping.
+    settings::init();
     applog::write(L"===== Tux-Tools 启动 =====");
+    applog::write(L"界面文字大小：%d%%", theme::textScale());
     // One block of machine facts up front. On a machine that needs diagnosing
     // this saves running several separate commands there.
     applog::writeEnvironmentSnapshot();

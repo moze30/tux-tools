@@ -21,6 +21,8 @@ add_executable(TuxTools WIN32
     src/ui_controls.cpp
     src/app_log.h
     src/app_log.cpp
+    src/settings.h
+    src/settings.cpp
     src/theme.h
     src/dpi.h
     src/render/render_tool.h

@@ -27,6 +27,20 @@ void searchBoxSetText(HWND hwnd, const std::wstring& text);
 
 HWND createValueList(HWND parent, HINSTANCE instance, int id);
 
+// The app's interface face at a design size, scaled for the monitor and for the
+// user's text-size setting. Shared with the shell so the custom-drawn chrome and
+// the list view can never disagree about which font is in use.
+HFONT font(int designPx, bool semibold = false);
+
+// Re-applies the interface face to the value list after the text size changed.
+// The list view derives its row height from its own font, so it has to be told
+// again or the rows keep the size they were created with.
+void valueListApplyFont(HWND valueList);
+
+// Throws away every cached face belonging to an older text size, keeping the
+// ones the current size is using. Called after the text size changes.
+void resetFontCache();
+
 void sectionListSetItems(HWND hwnd, const std::vector<std::wstring>& titles,
                          const std::vector<int>& counts);
 int sectionListGetSelection(HWND hwnd);
