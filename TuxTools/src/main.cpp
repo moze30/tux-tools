@@ -52,13 +52,25 @@ const wchar_t kAppSummary[] = L"通过 Windows 图形 API 查看驱动能力、�
 // Credited because their content is what the tools draw: the driver test ports
 // these demos rather than inventing its own scenes, and the capability viewer
 // reports the same properties these projects collect.
-struct Credit { const wchar_t* name; const wchar_t* note; };
+// Each entry also carries the project's repository, because the about card
+// makes the names clickable. Keeping the address beside the name is what stops
+// a name and a link from drifting apart when one of them is edited.
+struct Credit {
+    const wchar_t* name;
+    const wchar_t* note;
+    const wchar_t* url;
+};
 const Credit kCredits[] = {
-    {L"VulkanCapsViewer",     L"Sascha Willems · 驱动能力查看器参考"},
-    {L"glCapsViewer",         L"Sascha Willems · 驱动能力查看器参考"},
-    {L"Vulkan-Tools (vkcube)", L"Khronos · Vulkan 测试场景与纹理，Apache-2.0"},
-    {L"glxgears",             L"Brian Paul · OpenGL 测试场景，MIT"},
-    {L"DSMF-Decode-Test",     L"解码测试的解码核心，GPL-3.0"},
+    {L"VulkanCapsViewer", L"Sascha Willems · 驱动能力查看器参考",
+     L"https://github.com/SaschaWillems/VulkanCapsViewer"},
+    {L"glCapsViewer", L"Sascha Willems · 驱动能力查看器参考",
+     L"https://github.com/SaschaWillems/glCapsViewer"},
+    {L"Vulkan-Tools (vkcube)", L"Khronos · Vulkan 测试场景与纹理，Apache-2.0",
+     L"https://github.com/KhronosGroup/Vulkan-Tools"},
+    {L"glxgears", L"Calvin Hartwell · OpenGL 测试场景",
+     L"https://github.com/CalvinHartwell/windows-glxgears"},
+    {L"DSMF-Decode-Test", L"解码测试的解码核心，GPL-3.0",
+     L"https://github.com/Waim908/DSMF-Decode-Test"},
 };
 const int kCreditCount = static_cast<int>(sizeof(kCredits) / sizeof(kCredits[0]));
 
@@ -172,6 +184,12 @@ struct AppState {
     bool aboutLinkHot = false;
     RECT aboutCloseRect = {};
     RECT aboutLinkRect = {};
+
+    // One row per credited project. They are drawn as links and clicked to open
+    // the project on GitHub, so each needs its own hit rectangle; the index of
+    // the one under the pointer is what the hover styling keys off.
+    RECT creditRects[kCreditCount] = {};
+    int creditHot = -1;
 
     int apiHot = -1;
     int sectionHot = -1;
@@ -1277,9 +1295,14 @@ void setSettingsVisible(HWND hwnd, bool visible) {
     setOverlayVisible(hwnd, visible || s->aboutVisible);
 }
 
-void openRepository() {
-    ShellExecuteW(nullptr, L"open", kAppRepoUrl, nullptr, nullptr, SW_SHOWNORMAL);
+// Opens a URL in the default browser. The about card uses it for the repository
+// row and for every credited project.
+void openUrl(const wchar_t* url) {
+    if (!url || !*url) return;
+    ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
 }
+
+void openRepository() { openUrl(kAppRepoUrl); }
 
 // Draws the card and records the hit rectangles for the close button and the
 // repository link, which is what makes the overlay interactive.
@@ -1393,19 +1416,41 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
     }
     y += dpi::scale(14);
 
-    // Credits.
+    // Credits. Every project name is a link to its repository, so each one is
+    // drawn in the accent colour and highlights on hover. The whole row is the
+    // click target rather than the text alone, which is easier to hit.
     {
         RECT hr = {card.left + pad, y, card.right - pad, y + dpi::scale(20)};
         drawText(dc, L"鸣谢", hr, theme::kPageTitle, s->boldFont);
         y += dpi::scale(24);
     }
     for (int i = 0; i < kCreditCount; ++i) {
-        if (y + dpi::scale(30) > card.bottom - dpi::scale(12)) break;
-        RECT nr = {card.left + pad, y, card.left + pad + dpi::scale(160), y + dpi::scale(18)};
-        drawText(dc, kCredits[i].name, nr, theme::kTableText, s->boldFont,
+        if (y + dpi::scale(30) > card.bottom - dpi::scale(12)) {
+            s->creditRects[i] = {};
+            continue;
+        }
+        const int nameW = dpi::scale(170);
+        RECT rowRc = {card.left + pad, y, card.right - pad, y + dpi::scale(20)};
+        s->creditRects[i] = rowRc;
+
+        // Hover is shown as a tinted background behind the whole row. Swapping
+        // the text colour was tried first and was invisible: the two accent
+        // shades differ by too little to notice. This is also the tint the
+        // sidebar uses for its selected row, so it reads as "this one".
+        const bool hot = (s->creditHot == i);
+        if (hot) {
+            RECT pill = rowRc;
+            InflateRect(&pill, -dpi::scale(6), 0);
+            fillRoundRect(dc, pill, theme::kRadiusControl, theme::kNavSelected);
+        }
+
+        RECT nr = {rowRc.left, y, rowRc.left + nameW, y + dpi::scale(18)};
+        drawText(dc, kCredits[i].name, nr, theme::kAccent, s->boldFont,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        RECT dr = {nr.right + dpi::scale(8), y, card.right - pad, y + dpi::scale(18)};
-        drawText(dc, kCredits[i].note, dr, theme::kPageSubtitle, s->font);
+
+        RECT dr = {nr.right + dpi::scale(10), y, card.right - pad, y + dpi::scale(18)};
+        drawText(dc, kCredits[i].note, dr, theme::kPageSubtitle, s->font,
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         y += dpi::scale(22);
     }
 }
@@ -1789,10 +1834,25 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                     PtInRect(&s->settingsLogRect, pt) != 0;
                 const bool pathHot = s->settingsVisible &&
                                      PtInRect(&s->settingsPathRect, pt) != 0;
+
+                // Which credited project the pointer is over, or -1. Each name
+                // is a link, so each needs its own hover state.
+                int creditHot = -1;
+                if (s->aboutVisible) {
+                    for (int i = 0; i < kCreditCount; ++i) {
+                        if (!IsRectEmpty(&s->creditRects[i]) &&
+                            PtInRect(&s->creditRects[i], pt)) {
+                            creditHot = i;
+                            break;
+                        }
+                    }
+                }
                 if (closeHot != s->aboutCloseHot || linkHot != s->aboutLinkHot ||
-                    logHot != s->settingsLogHot || pathHot != s->settingsPathHot) {
+                    logHot != s->settingsLogHot || pathHot != s->settingsPathHot ||
+                    creditHot != s->creditHot) {
                     s->aboutCloseHot = closeHot;
                     s->aboutLinkHot = linkHot;
+                    s->creditHot = creditHot;
                     s->settingsLogHot = logHot;
                     s->settingsPathHot = pathHot;
                     InvalidateRect(hwnd, nullptr, FALSE);
@@ -1851,9 +1911,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_MOUSELEAVE:
             if (s && (s->apiHot != -1 || s->captionHot != kCaptionNone || s->toolHot ||
                       s->runButtonHot || s->aboutCloseHot || s->aboutLinkHot ||
-                      s->settingsLogHot || s->settingsPathHot)) {
+                      s->settingsLogHot || s->settingsPathHot || s->creditHot >= 0)) {
                 s->aboutCloseHot = false;
                 s->aboutLinkHot = false;
+                s->creditHot = -1;
                 s->settingsLogHot = false;
                 s->settingsPathHot = false;
                 s->apiHot = -1;
@@ -1902,6 +1963,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                   SW_SHOWNORMAL);
                 } else if (s->aboutVisible && PtInRect(&s->aboutLinkRect, pt)) {
                     openRepository();
+                } else if (s->aboutVisible && s->creditHot >= 0 &&
+                           s->creditHot < kCreditCount) {
+                    // A credited project was clicked; open its repository.
+                    openUrl(kCredits[s->creditHot].url);
                 } else if (!PtInRect(&s->aboutCloseRect, pt)) {
                     setAboutVisible(hwnd, false);
                     setSettingsVisible(hwnd, false);
