@@ -2096,6 +2096,22 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             mmi->ptMinTrackSize.y = 620;
             return 0;
         }
+        case WM_NOTIFY: {
+            // The value table's rows are painted from here.
+            //
+            // A control sends its custom draw to its parent, and the list view's
+            // parent is this window - not the list itself. Its own subclass only
+            // ever sees the header, which is a child of the list. Looking for the
+            // rows there is why they were left to the system's default painter,
+            // which clipped them into a stale twelve-pixel item rectangle and
+            // produced the empty-looking table.
+            NMHDR* hdr = reinterpret_cast<NMHDR*>(lParam);
+            if (s && hdr && hdr->hwndFrom == s->valueList &&
+                hdr->code == NM_CUSTOMDRAW) {
+                return ui::valueListCustomDraw(s->valueList, hdr);
+            }
+            break;
+        }
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             int code = HIWORD(wParam);

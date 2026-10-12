@@ -54,4 +54,13 @@ struct ValueRow {
 void valueListSetRows(HWND hwnd, const std::vector<ValueRow>& rows);
 void valueListResizeColumns(HWND hwnd);
 
+// Paints one row of the value table.
+//
+// A control sends its custom draw notification to its parent, not to itself, so
+// the list view's rows cannot be painted from its own subclass: that subclass
+// only ever sees the header, which is a child of the list. The parent window -
+// the main window - is where the notification actually arrives, and it hands it
+// back here. The return value is the one the parent must return from WM_NOTIFY.
+LRESULT valueListCustomDraw(HWND valueList, NMHDR* hdr);
+
 }  // namespace ui

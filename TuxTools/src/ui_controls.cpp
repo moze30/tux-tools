@@ -42,6 +42,9 @@ struct SearchData {
 
 struct ValueData {
     int hot = -1;
+    // The property-name column width, kept here so the row painter never has to
+    // ask the control for it. See valueListCustomDraw.
+    int nameWidth = 0;
 };
 
 SectionData* sectionData(HWND hwnd) {
@@ -50,6 +53,16 @@ SectionData* sectionData(HWND hwnd) {
 
 SearchData* searchData(HWND hwnd) {
     return reinterpret_cast<SearchData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+// The list's own data hangs off a window property rather than only off the
+// subclass reference, because two different window procedures need it: the
+// subclass handles the header, and the parent window - the real destination of
+// the list's custom draw - paints the rows.
+const wchar_t* const kValueDataProp = L"TuxToolsValueData";
+
+ValueData* valueData(HWND hwnd) {
+    return reinterpret_cast<ValueData*>(GetPropW(hwnd, kValueDataProp));
 }
 
 // One cached font per (size, weight, text-scale) triple, made on first use.
@@ -299,6 +312,104 @@ void drawListHeaderItem(HDC dc, HWND header, int index) {
     RECT bottom = {itemRc.left, itemRc.bottom - 1, itemRc.right, itemRc.bottom};
     fillRect(dc, bottom, theme::kDivider);
 }
+
+// Reads one cell's text, growing the buffer until the control stops reporting
+// that it truncated. The values in this table are driver strings, and a fixed
+// buffer silently cut the longest of them off at the point where they are most
+// interesting.
+std::wstring valueListCellText(HWND list, int item, int subItem) {
+    std::wstring text;
+    for (int cap = 256; cap <= 65536; cap *= 2) {
+        text.assign(static_cast<size_t>(cap), L'\0');
+        LVITEMW it = {};
+        it.iSubItem = subItem;
+        it.pszText = &text[0];
+        it.cchTextMax = cap;
+        const int n = static_cast<int>(
+            SendMessageW(list, LVM_GETITEMTEXTW, static_cast<WPARAM>(item),
+                         reinterpret_cast<LPARAM>(&it)));
+        if (n < cap - 1) {
+            text.resize(n > 0 ? static_cast<size_t>(n) : 0);
+            return text;
+        }
+    }
+    return text;
+}
+
+}  // namespace
+
+LRESULT valueListCustomDraw(HWND list, NMHDR* hdr) {
+    if (!list || !hdr) return CDRF_DODEFAULT;
+    LPNMLVCUSTOMDRAW lvcd = reinterpret_cast<LPNMLVCUSTOMDRAW>(hdr);
+    ValueData* data = valueData(list);
+
+    switch (lvcd->nmcd.dwDrawStage) {
+        case CDDS_PREPAINT:
+            return CDRF_NOTIFYITEMDRAW;
+
+        case CDDS_ITEMPREPAINT: {
+            const int item = static_cast<int>(lvcd->nmcd.dwItemSpec);
+            HDC dc = lvcd->nmcd.hdc;
+
+            // The row's top and bottom come from the notification, because they
+            // track the scroll position; its left and right do not.
+            //
+            // The width the control reports is not trustworthy. It is derived
+            // from a total width the control caches and only refreshes from
+            // HDN_ITEMCHANGED; while the subclass was swallowing those, the list
+            // kept the total it computed at creation while it was still
+            // zero-sized and handed every row over as a twelve-pixel sliver, so
+            // the text drawn into it was invisible and the table looked empty.
+            // The columns we set are the authority instead.
+            RECT client;
+            GetClientRect(list, &client);
+            const int right = client.right - GetSystemMetrics(SM_CXVSCROLL);
+            RECT row = lvcd->nmcd.rc;
+            row.left = 0;
+            row.right = right;
+
+            const bool selected = (lvcd->nmcd.uItemState & CDIS_SELECTED) != 0;
+            const bool hot = data && item == data->hot;
+
+            COLORREF textColor;
+            if (selected) {
+                fillRect(dc, row, theme::kTableSelected);
+                textColor = theme::kAccent;
+            } else if (hot) {
+                fillRect(dc, row, theme::kTableRowHover);
+                textColor = theme::kTableText;
+            } else {
+                fillRect(dc, row, theme::kContentBg);
+                textColor = theme::kTableText;
+            }
+
+            int nameWidth = data ? data->nameWidth : 0;
+            if (nameWidth <= 0) nameWidth = right * 42 / 100;
+            const int pad = theme::kSpaceM;
+            HFONT face = cachedFont(theme::kFontTable, false);
+
+            RECT nameRc = {pad, row.top, nameWidth - pad, row.bottom};
+            if (nameRc.right < nameRc.left) nameRc.right = nameRc.left;
+            drawTextClipped(dc, valueListCellText(list, item, 0), nameRc, textColor, face);
+
+            RECT valueRc = {nameWidth + pad, row.top, right - pad, row.bottom};
+            if (valueRc.right < valueRc.left) valueRc.right = valueRc.left;
+            drawTextClipped(dc, valueListCellText(list, item, 1), valueRc, textColor, face);
+
+            RECT line = {0, row.bottom - 1, right, row.bottom};
+            fillRect(dc, line, theme::kDivider);
+
+            // Both columns are drawn above, so the control must not draw the
+            // item itself; skipping the default is also what keeps it from
+            // painting a default selection highlight over the row.
+            return CDRF_SKIPDEFAULT;
+        }
+    }
+    return CDRF_DODEFAULT;
+}
+
+namespace {
+
 LRESULT CALLBACK valueListSubclass(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                    UINT_PTR /*ref*/, DWORD_PTR refData) {
     ValueData* data = reinterpret_cast<ValueData*>(refData);
@@ -327,11 +438,37 @@ LRESULT CALLBACK valueListSubclass(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             return 0;
         case WM_NCDESTROY:
+            RemovePropW(hwnd, kValueDataProp);
             delete data;
             break;
         case WM_NOTIFY: {
             LPNMHDR hdr = reinterpret_cast<LPNMHDR>(lParam);
-            if (hdr->code != NM_CUSTOMDRAW) return 0;
+            // Only the header's custom draw is handled here, and everything else
+            // the header sends has to reach the list itself.
+            //
+            // The header is a child of the list view, so its notifications pass
+            // through this subclass on the way to their real recipient, which is
+            // the list view. Returning zero for them - which is what this did -
+            // swallows HDN_ITEMCHANGED among others, and the list is then left
+            // with the widths it cached at creation: it never learns the columns
+            // were resized, and the rows are clipped into whatever total width
+            // the very first, zero-sized layout produced.
+            //
+            // A resize still has to be tracked here, because the row painter
+            // needs the current width. It is read back from the header rather
+            // than recomputed: setting the columns from inside this notification
+            // would raise another one and the two would trade it back and forth.
+            if (hdr->code == HDN_ITEMCHANGEDW || hdr->code == HDN_ITEMCHANGEDA) {
+                HWND hd = ListView_GetHeader(hwnd);
+                RECT r0;
+                if (hd && Header_GetItemRect(hd, 0, &r0)) {
+                    if (ValueData* d = valueData(hwnd)) {
+                        d->nameWidth = r0.right - r0.left;
+                    }
+                }
+                break;
+            }
+            if (hdr->code != NM_CUSTOMDRAW) break;
 
             HWND header = ListView_GetHeader(hwnd);
             LPNMCUSTOMDRAW cd = reinterpret_cast<LPNMCUSTOMDRAW>(lParam);
@@ -351,39 +488,10 @@ LRESULT CALLBACK valueListSubclass(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 return CDRF_DODEFAULT;
             }
 
-            LPNMLVCUSTOMDRAW lvcd = reinterpret_cast<LPNMLVCUSTOMDRAW>(lParam);
-            switch (lvcd->nmcd.dwDrawStage) {
-                case CDDS_PREPAINT:
-                    return CDRF_NOTIFYITEMDRAW;
-                case CDDS_ITEMPREPAINT: {
-                    int item = static_cast<int>(lvcd->nmcd.dwItemSpec);
-                    bool selected = (lvcd->nmcd.uItemState & CDIS_SELECTED) != 0;
-                    bool hot = data && item == data->hot;
-                    if (selected) {
-                        lvcd->clrTextBk = theme::kTableSelected;
-                        lvcd->clrText = theme::kAccent;
-                    } else if (hot) {
-                        lvcd->clrTextBk = theme::kTableRowHover;
-                        lvcd->clrText = theme::kTableText;
-                    } else {
-                        lvcd->clrTextBk = theme::kContentBg;
-                        lvcd->clrText = theme::kTableText;
-                    }
-                    return CDRF_NOTIFYPOSTPAINT | CDRF_NEWFONT;
-                }
-                case CDDS_ITEMPOSTPAINT: {
-                    // Thin row separator, Docker-style.
-                    RECT rowRc;
-                    if (ListView_GetItemRect(hwnd, static_cast<int>(lvcd->nmcd.dwItemSpec),
-                                             &rowRc, LVIR_BOUNDS)) {
-                        RECT line = {rowRc.left, rowRc.bottom - 1,
-                                     rowRc.right, rowRc.bottom};
-                        fillRect(lvcd->nmcd.hdc, line, theme::kDivider);
-                    }
-                    return CDRF_DODEFAULT;
-                }
-            }
-            return 0;
+            // The list's own custom draw never arrives here: a control notifies
+            // its parent, and this window is not the list's parent - the main
+            // window is. Rows are painted there, by valueListCustomDraw.
+            return CDRF_DODEFAULT;
         }
         case WM_ERASEBKGND: {
             RECT rc;
@@ -576,8 +684,11 @@ HWND createValueList(HWND parent, HINSTANCE instance, int id) {
     // then divides the width between the two columns.
     valueListApplyFont(list);
 
-    SetWindowSubclass(list, valueListSubclass, 1,
-                      reinterpret_cast<DWORD_PTR>(new ValueData()));
+    ValueData* data = new ValueData();
+    // Stored as a window property as well as in the subclass reference: the
+    // parent window paints the rows and has no other way to reach this.
+    SetPropW(list, kValueDataProp, reinterpret_cast<HANDLE>(data));
+    SetWindowSubclass(list, valueListSubclass, 1, reinterpret_cast<DWORD_PTR>(data));
     return list;
 }
 
@@ -654,6 +765,15 @@ void valueListResizeColumns(HWND hwnd) {
     // bar comes and goes.
     const int usable = rc.right - GetSystemMetrics(SM_CXVSCROLL);
 
+    // The control is created at zero size and only moved into place once the
+    // main window has laid itself out, so this runs at least once with nothing
+    // to divide. Without this guard the arithmetic below produces negative
+    // widths, LVM_SETCOLUMNWIDTH rejects them, and the control is left holding
+    // whatever the header happened to contain - the state the table then fails
+    // to recover from on a control whose item width is only recomputed when it
+    // is told the columns changed.
+    if (usable <= 0) return;
+
     // The property-name column holds a name, so its floor follows the text
     // size: at 160% a 160-pixel column would ellipsise most of them.
     int nameWidth = usable * 42 / 100;
@@ -662,6 +782,14 @@ void valueListResizeColumns(HWND hwnd) {
     if (nameWidth > usable) nameWidth = usable;
     ListView_SetColumnWidth(hwnd, 0, nameWidth);
     ListView_SetColumnWidth(hwnd, 1, usable - nameWidth);
+
+    // Remembered for the row painter. It draws its own geometry rather than
+    // trusting the control's idea of how wide an item is: on Wine that value is
+    // not refreshed by LVM_SETCOLUMNWIDTH, so it can lag arbitrarily far behind
+    // the columns actually on screen.
+    if (ValueData* data = valueData(hwnd)) {
+        data->nameWidth = nameWidth;
+    }
 }
 
 }  // namespace ui
