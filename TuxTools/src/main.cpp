@@ -52,24 +52,25 @@ const wchar_t kAppSummary[] = L"通过 Windows 图形 API 查看驱动能力、�
 // Credited because their content is what the tools draw: the driver test ports
 // these demos rather than inventing its own scenes, and the capability viewer
 // reports the same properties these projects collect.
-// Each entry also carries the project's repository, because the about card
-// makes the names clickable. Keeping the address beside the name is what stops
-// a name and a link from drifting apart when one of them is edited.
+//
+// "shown" is what the card prints and "url" is what the browser is handed. They
+// differ only in the scheme: the address reads better without "https://" beside
+// the project name, but a browser needs it spelled out.
 struct Credit {
     const wchar_t* name;
-    const wchar_t* note;
+    const wchar_t* shown;
     const wchar_t* url;
 };
 const Credit kCredits[] = {
-    {L"VulkanCapsViewer", L"Sascha Willems · 驱动能力查看器参考",
+    {L"VulkanCapsViewer", L"github.com/SaschaWillems/VulkanCapsViewer",
      L"https://github.com/SaschaWillems/VulkanCapsViewer"},
-    {L"glCapsViewer", L"Sascha Willems · 驱动能力查看器参考",
+    {L"glCapsViewer", L"github.com/SaschaWillems/glCapsViewer",
      L"https://github.com/SaschaWillems/glCapsViewer"},
-    {L"Vulkan-Tools (vkcube)", L"Khronos · Vulkan 测试场景与纹理，Apache-2.0",
+    {L"Vulkan-Tools (vkcube)", L"github.com/KhronosGroup/Vulkan-Tools",
      L"https://github.com/KhronosGroup/Vulkan-Tools"},
-    {L"glxgears", L"Calvin Hartwell · OpenGL 测试场景",
+    {L"glxgears", L"github.com/CalvinHartwell/windows-glxgears",
      L"https://github.com/CalvinHartwell/windows-glxgears"},
-    {L"DSMF-Decode-Test", L"解码测试的解码核心，GPL-3.0",
+    {L"DSMF-Decode-Test", L"github.com/Waim908/DSMF-Decode-Test",
      L"https://github.com/Waim908/DSMF-Decode-Test"},
 };
 const int kCreditCount = static_cast<int>(sizeof(kCredits) / sizeof(kCredits[0]));
@@ -1429,7 +1430,9 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
             s->creditRects[i] = {};
             continue;
         }
-        const int nameW = dpi::scale(170);
+        // The name column only has to hold a project name; the address needs the
+        // rest and is the longest string on the card, so it gets the room.
+        const int nameW = dpi::scale(158);
         RECT rowRc = {card.left + pad, y, card.right - pad, y + dpi::scale(20)};
         s->creditRects[i] = rowRc;
 
@@ -1449,7 +1452,7 @@ void paintAbout(HWND hwnd, HDC dc, const RECT& client) {
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         RECT dr = {nr.right + dpi::scale(10), y, card.right - pad, y + dpi::scale(18)};
-        drawText(dc, kCredits[i].note, dr, theme::kPageSubtitle, s->font,
+        drawText(dc, kCredits[i].shown, dr, theme::kPageSubtitle, s->font,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         y += dpi::scale(22);
     }
