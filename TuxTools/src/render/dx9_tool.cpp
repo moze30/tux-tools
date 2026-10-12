@@ -44,6 +44,10 @@ const float kLookAtY = 2.5f;
 
 class Dx9Tool : public Tool {
 public:
+    // Releases everything when the tool is destroyed, so a failed init cannot
+    // leak the device it had already created.
+    ~Dx9Tool() override { shutdown(); }
+
     bool init(HWND host) override;
     void resize(int width, int height) override;
     void render(double elapsed) override;
@@ -458,6 +462,8 @@ void Dx9Tool::shutdown() {
     for (GpuMesh* m : meshes) {
         if (m->ib) { m->ib->Release(); m->ib = nullptr; }
         if (m->vb) { m->vb->Release(); m->vb = nullptr; }
+        m->vertexCount = 0;
+        m->primitiveCount = 0;
     }
     releaseDevice();
 }

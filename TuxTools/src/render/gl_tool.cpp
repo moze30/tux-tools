@@ -176,6 +176,11 @@ void reportGlError(const char* where) {
 
 class OpenGlTool : public Tool {
 public:
+    // Releases everything when the tool is destroyed. The context is a resource
+    // that belongs to this object alone, so leaving it behind on a failed init
+    // also leaves the window unable to host another one.
+    ~OpenGlTool() override { shutdown(); }
+
     bool init(HWND host) override;
     void resize(int width, int height) override;
     void render(double elapsed) override;
@@ -394,12 +399,14 @@ void OpenGlTool::render(double elapsed) {
 }
 
 void OpenGlTool::shutdown() {
+    // Only current contexts may be deleted, and the DC may already be gone.
     if (rc_) {
-        wglMakeCurrent(dc_, rc_);
-        if (gear1_) glDeleteLists(gear1_, 1);
-        if (gear2_) glDeleteLists(gear2_, 1);
-        if (gear3_) glDeleteLists(gear3_, 1);
-        gear1_ = gear2_ = gear3_ = 0;
+        if (dc_ && wglMakeCurrent(dc_, rc_)) {
+            if (gear1_) glDeleteLists(gear1_, 1);
+            if (gear2_) glDeleteLists(gear2_, 1);
+            if (gear3_) glDeleteLists(gear3_, 1);
+            gear1_ = gear2_ = gear3_ = 0;
+        }
         wglMakeCurrent(nullptr, nullptr);
         wglDeleteContext(rc_);
         rc_ = nullptr;
@@ -408,6 +415,7 @@ void OpenGlTool::shutdown() {
         ReleaseDC(host_, dc_);
         dc_ = nullptr;
     }
+    host_ = nullptr;
 }
 
 Tool* createOpenGl() { return new OpenGlTool(); }

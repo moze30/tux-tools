@@ -332,6 +332,13 @@ float4 PSMain(PSInput input) : SV_TARGET
 
 class Dx12Tool : public Tool {
 public:
+    // Releases everything when the tool is destroyed. The GPU is drained first,
+    // which matters more here than in the other backends: Direct3D 12 lets the
+    // caller free a resource while a command list that references it is still
+    // executing, and the failure that follows is a device removal some frames
+    // later rather than an immediate error.
+    ~Dx12Tool() override { shutdown(); }
+
     bool init(HWND host) override;
     void resize(int width, int height) override;
     void render(double elapsed) override;
@@ -368,7 +375,9 @@ private:
     ID3D12GraphicsCommandList* commandList_ = nullptr;
     ID3D12Fence* fence_ = nullptr;
     HANDLE fenceEvent_ = nullptr;
-    UINT64 fenceValues_[kFrameCount] = {};
+    // A single counter for the whole queue, not one per back buffer. See
+    // waitForGpu().
+    UINT64 fenceValue_ = 0;
 
     ID3D12DescriptorHeap* rtvHeap_ = nullptr;
     UINT rtvDescriptorSize_ = 0;
@@ -640,12 +649,20 @@ bool Dx12Tool::createFrameResources() {
     return true;
 }
 
+// Blocks until the queue has finished everything submitted so far.
+//
+// The fence value is a plain counter now rather than a per-back-buffer one.
+// It used to be derived from the swap chain's current back buffer index, which
+// meant this function dereferenced the swap chain - a null one during cleanup
+// after a failed init, and the wrong value when the chain had been recreated.
+// A counter that only ever goes up needs neither.
 void Dx12Tool::waitForGpu() {
-    const UINT frame = swapChain_->GetCurrentBackBufferIndex();
-    const UINT64 value = ++fenceValues_[frame];
-    queue_->Signal(fence_, value);
-    if (fence_->GetCompletedValue() < value) {
-        fence_->SetEventOnCompletion(value, fenceEvent_);
+    if (!queue_ || !fence_ || !fenceEvent_) return;
+
+    ++fenceValue_;
+    if (FAILED(queue_->Signal(fence_, fenceValue_))) return;
+    if (fence_->GetCompletedValue() < fenceValue_) {
+        if (FAILED(fence_->SetEventOnCompletion(fenceValue_, fenceEvent_))) return;
         WaitForSingleObject(fenceEvent_, INFINITE);
     }
 }
@@ -785,28 +802,38 @@ void Dx12Tool::render(double elapsed) {
     swapChain_->Present(0, 0);
 }
 
+// Drains the GPU, releases everything, and leaves the object safe to release
+// again. Every interface is nulled as it is freed.
 void Dx12Tool::shutdown() {
-    if (queue_ && fence_ && fenceEvent_) waitForGpu();
+    // Anything still in flight has to finish before the resources it refers to
+    // go away, so this is not optional. waitForGpu() returns quietly when the
+    // queue was never created, which is how it stays safe on a failed init.
+    waitForGpu();
+
     releaseSizeDependent();
+
     if (constantBuffer_ && constantMapped_) {
         constantBuffer_->Unmap(0, nullptr);
         constantMapped_ = nullptr;
     }
-    if (constantBuffer_) constantBuffer_->Release();
-    if (pipeline_) pipeline_->Release();
-    if (rootSignature_) rootSignature_->Release();
+    if (constantBuffer_) { constantBuffer_->Release(); constantBuffer_ = nullptr; }
+    // The command list holds a reference to the pipeline state, so it is freed
+    // first; releasing the pipeline while the list still points at it is what
+    // the ordering here is for.
+    if (commandList_) { commandList_->Release(); commandList_ = nullptr; }
+    if (pipeline_) { pipeline_->Release(); pipeline_ = nullptr; }
+    if (rootSignature_) { rootSignature_->Release(); rootSignature_ = nullptr; }
     for (ID3D12Resource*& rt : renderTargets_) {
         if (rt) { rt->Release(); rt = nullptr; }
     }
-    if (rtvHeap_) rtvHeap_->Release();
-    if (fenceEvent_) CloseHandle(fenceEvent_);
-    if (fence_) fence_->Release();
-    if (commandList_) commandList_->Release();
-    if (allocators_[1]) allocators_[1]->Release();
-    if (allocators_[0]) allocators_[0]->Release();
-    if (queue_) queue_->Release();
-    if (swapChain_) swapChain_->Release();
-    if (device_) device_->Release();
+    if (rtvHeap_) { rtvHeap_->Release(); rtvHeap_ = nullptr; }
+    if (fenceEvent_) { CloseHandle(fenceEvent_); fenceEvent_ = nullptr; }
+    if (fence_) { fence_->Release(); fence_ = nullptr; }
+    if (allocators_[1]) { allocators_[1]->Release(); allocators_[1] = nullptr; }
+    if (allocators_[0]) { allocators_[0]->Release(); allocators_[0] = nullptr; }
+    if (queue_) { queue_->Release(); queue_ = nullptr; }
+    if (swapChain_) { swapChain_->Release(); swapChain_ = nullptr; }
+    if (device_) { device_->Release(); device_ = nullptr; }
 }
 
 Tool* createDx12() { return new Dx12Tool(); }

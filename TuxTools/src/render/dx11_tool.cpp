@@ -206,6 +206,14 @@ float4 PSComposite(VSOutput input) : SV_TARGET
 
 class Dx11Tool : public Tool {
 public:
+    // The destructor releases everything, so a tool that fails part way through
+    // init and is then deleted does not leak the device it had already made.
+    // shutdown() used to be reachable only through the explicit call in the
+    // shell, which meant every failed init leaked a Direct3D device; on a
+    // translation layer the next backend to start then had to build its own
+    // device on top of the leaked one, and that is where it fell over.
+    ~Dx11Tool() override { shutdown(); }
+
     bool init(HWND host) override;
     void resize(int width, int height) override;
     void render(double elapsed) override;
@@ -691,10 +699,7 @@ bool Dx11Tool::init(HWND host) {
     // because the log is only useful if it says which one stopped.
     if (!createShaders()) { failureReason_ = L"无法编译着色器"; return false; }
     applog::write(L"Direct3D 11：着色器已编译");
-    // As with Vulkan, the baseline matters: record which window shapes work
-    // before anything fails, so a later failure can be read against it. Gated on
-    // the log for the same reason - the probe opens windows.
-    if (applog::enabled())    if (!createGeometry()) { failureReason_ = L"无法创建几何缓冲"; return false; }
+    if (!createGeometry()) { failureReason_ = L"无法创建几何缓冲"; return false; }
     if (!createTextures()) { failureReason_ = L"无法创建纹理"; return false; }
     if (!createStates()) { failureReason_ = L"无法创建渲染状态"; return false; }
     if (!createFullscreenQuad()) { failureReason_ = L"无法创建全屏四边形"; return false; }
@@ -929,38 +934,48 @@ void Dx11Tool::render(double elapsed) {
     swapChain_->Present(0, 0);
 }
 
+// Releases everything and leaves the object safe to release again.
+//
+// Every interface is nulled as it goes. shutdown() is now called from the
+// destructor as well as from the shell, so it runs on paths where some of these
+// were never created - and on paths where it has already run once. Releasing a
+// null is harmless; releasing a stale pointer is not.
 void Dx11Tool::shutdown() {
+    if (context_) context_->ClearState();
+    if (context_) context_->Flush();
     releaseSizeDependent();
     releaseTargets();
-    if (blendAdditive_) blendAdditive_->Release();
-    if (blendOpaque_) blendOpaque_->Release();
-    if (depthOff_) depthOff_->Release();
-    if (depthNoWrite_) depthNoWrite_->Release();
-    if (depthWrite_) depthWrite_->Release();
-    if (rasterCullNone_) rasterCullNone_->Release();
-    if (rasterCullBack_) rasterCullBack_->Release();
-    if (clampSampler_) clampSampler_->Release();
-    if (discTexture_) discTexture_->Release();
-    if (starTexture_) starTexture_->Release();
-    if (fullscreenVb_) fullscreenVb_->Release();
+
+    if (blendAdditive_) { blendAdditive_->Release(); blendAdditive_ = nullptr; }
+    if (blendOpaque_) { blendOpaque_->Release(); blendOpaque_ = nullptr; }
+    if (depthOff_) { depthOff_->Release(); depthOff_ = nullptr; }
+    if (depthNoWrite_) { depthNoWrite_->Release(); depthNoWrite_ = nullptr; }
+    if (depthWrite_) { depthWrite_->Release(); depthWrite_ = nullptr; }
+    if (rasterCullNone_) { rasterCullNone_->Release(); rasterCullNone_ = nullptr; }
+    if (rasterCullBack_) { rasterCullBack_->Release(); rasterCullBack_ = nullptr; }
+    if (clampSampler_) { clampSampler_->Release(); clampSampler_ = nullptr; }
+    if (discTexture_) { discTexture_->Release(); discTexture_ = nullptr; }
+    if (starTexture_) { starTexture_->Release(); starTexture_ = nullptr; }
+    if (fullscreenVb_) { fullscreenVb_->Release(); fullscreenVb_ = nullptr; }
     GpuMesh* meshes[5] = {&star_, &discInner_, &discMid_, &discOuter_, &jets_};
     for (GpuMesh* m : meshes) {
-        if (m->ib) m->ib->Release();
-        if (m->vb) m->vb->Release();
+        if (m->ib) { m->ib->Release(); m->ib = nullptr; }
+        if (m->vb) { m->vb->Release(); m->vb = nullptr; }
+        m->indexCount = 0;
     }
-    if (postBuffer_) postBuffer_->Release();
-    if (constantBuffer_) constantBuffer_->Release();
-    if (fullscreenLayout_) fullscreenLayout_->Release();
-    if (inputLayout_) inputLayout_->Release();
-    if (psComposite_) psComposite_->Release();
-    if (psBlur_) psBlur_->Release();
-    if (psBright_) psBright_->Release();
-    if (ps_) ps_->Release();
-    if (vsFullscreen_) vsFullscreen_->Release();
-    if (vs_) vs_->Release();
-    if (swapChain_) swapChain_->Release();
-    if (context_) context_->Release();
-    if (device_) device_->Release();
+    if (postBuffer_) { postBuffer_->Release(); postBuffer_ = nullptr; }
+    if (constantBuffer_) { constantBuffer_->Release(); constantBuffer_ = nullptr; }
+    if (fullscreenLayout_) { fullscreenLayout_->Release(); fullscreenLayout_ = nullptr; }
+    if (inputLayout_) { inputLayout_->Release(); inputLayout_ = nullptr; }
+    if (psComposite_) { psComposite_->Release(); psComposite_ = nullptr; }
+    if (psBlur_) { psBlur_->Release(); psBlur_ = nullptr; }
+    if (psBright_) { psBright_->Release(); psBright_ = nullptr; }
+    if (ps_) { ps_->Release(); ps_ = nullptr; }
+    if (vsFullscreen_) { vsFullscreen_->Release(); vsFullscreen_ = nullptr; }
+    if (vs_) { vs_->Release(); vs_ = nullptr; }
+    if (swapChain_) { swapChain_->Release(); swapChain_ = nullptr; }
+    if (context_) { context_->Release(); context_ = nullptr; }
+    if (device_) { device_->Release(); device_ = nullptr; }
 }
 
 Tool* createDx11() { return new Dx11Tool(); }

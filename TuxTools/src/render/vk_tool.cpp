@@ -359,6 +359,11 @@ constexpr float kClearGrey = 0.2f;
 
 class VulkanTool : public Tool {
 public:
+    // Releases everything when the tool is destroyed, including the loader it
+    // opened; a failed init that left the DLL loaded would keep the next
+    // attempt from opening it cleanly.
+    ~VulkanTool() override { shutdown(); }
+
     bool init(HWND host) override;
     void resize(int width, int height) override;
     void render(double elapsed) override;
@@ -1519,18 +1524,33 @@ void VulkanTool::render(double elapsed) {
     }
 }
 
+// Releases everything and leaves the object safe to release again.
+//
+// The loader is closed on every path, including the ones that never got as far
+// as a device, and every handle is cleared as it is destroyed. shutdown() runs
+// from the destructor as well as from the shell, so it meets partially built
+// states and repeat calls.
 void VulkanTool::shutdown() {
+    // Nothing below is valid without a device, but the instance and the loader
+    // are, and they are what a failed init leaves behind.
     if (!device_) {
-        if (instance_ && vk_.DestroyInstance) vk_.DestroyInstance(instance_, nullptr);
-        if (vk_.dll) FreeLibrary(vk_.dll);
+        if (instance_ && vk_.DestroyInstance) {
+            if (surface_ && vk_.DestroySurfaceKHR) {
+                vk_.DestroySurfaceKHR(instance_, surface_, nullptr);
+            }
+            vk_.DestroyInstance(instance_, nullptr);
+        }
+        instance_ = VK_NULL_HANDLE;
+        surface_ = VK_NULL_HANDLE;
+        if (vk_.dll) { FreeLibrary(vk_.dll); vk_.dll = nullptr; }
         return;
     }
 
-    vk_.DeviceWaitIdle(device_);
+    if (vk_.DeviceWaitIdle) vk_.DeviceWaitIdle(device_);
 
-    if (inFlight_) vk_.DestroyFence(device_, inFlight_, nullptr);
-    if (renderFinished_) vk_.DestroySemaphore(device_, renderFinished_, nullptr);
-    if (imageAvailable_) vk_.DestroySemaphore(device_, imageAvailable_, nullptr);
+    if (inFlight_) { vk_.DestroyFence(device_, inFlight_, nullptr); inFlight_ = VK_NULL_HANDLE; }
+    if (renderFinished_) { vk_.DestroySemaphore(device_, renderFinished_, nullptr); renderFinished_ = VK_NULL_HANDLE; }
+    if (imageAvailable_) { vk_.DestroySemaphore(device_, imageAvailable_, nullptr); imageAvailable_ = VK_NULL_HANDLE; }
 
     destroySwapchain();
 
@@ -1538,26 +1558,26 @@ void VulkanTool::shutdown() {
         vk_.UnmapMemory(device_, uniformMemory_);
         uniformMapped_ = nullptr;
     }
-    if (uniformBuffer_) vk_.DestroyBuffer(device_, uniformBuffer_, nullptr);
-    if (uniformMemory_) vk_.FreeMemory(device_, uniformMemory_, nullptr);
+    if (uniformBuffer_) { vk_.DestroyBuffer(device_, uniformBuffer_, nullptr); uniformBuffer_ = VK_NULL_HANDLE; }
+    if (uniformMemory_) { vk_.FreeMemory(device_, uniformMemory_, nullptr); uniformMemory_ = VK_NULL_HANDLE; }
 
-    if (sampler_) vk_.DestroySampler(device_, sampler_, nullptr);
-    if (textureView_) vk_.DestroyImageView(device_, textureView_, nullptr);
-    if (texture_) vk_.DestroyImage(device_, texture_, nullptr);
-    if (textureMemory_) vk_.FreeMemory(device_, textureMemory_, nullptr);
+    if (sampler_) { vk_.DestroySampler(device_, sampler_, nullptr); sampler_ = VK_NULL_HANDLE; }
+    if (textureView_) { vk_.DestroyImageView(device_, textureView_, nullptr); textureView_ = VK_NULL_HANDLE; }
+    if (texture_) { vk_.DestroyImage(device_, texture_, nullptr); texture_ = VK_NULL_HANDLE; }
+    if (textureMemory_) { vk_.FreeMemory(device_, textureMemory_, nullptr); textureMemory_ = VK_NULL_HANDLE; }
 
-    if (pool_) vk_.DestroyDescriptorPool(device_, pool_, nullptr);
-    if (pipeline_) vk_.DestroyPipeline(device_, pipeline_, nullptr);
-    if (pipelineLayout_) vk_.DestroyPipelineLayout(device_, pipelineLayout_, nullptr);
-    if (setLayout_) vk_.DestroyDescriptorSetLayout(device_, setLayout_, nullptr);
-    if (renderPass_) vk_.DestroyRenderPass(device_, renderPass_, nullptr);
-    if (commandPool_) vk_.DestroyCommandPool(device_, commandPool_, nullptr);
+    if (pool_) { vk_.DestroyDescriptorPool(device_, pool_, nullptr); pool_ = VK_NULL_HANDLE; }
+    if (pipeline_) { vk_.DestroyPipeline(device_, pipeline_, nullptr); pipeline_ = VK_NULL_HANDLE; }
+    if (pipelineLayout_) { vk_.DestroyPipelineLayout(device_, pipelineLayout_, nullptr); pipelineLayout_ = VK_NULL_HANDLE; }
+    if (setLayout_) { vk_.DestroyDescriptorSetLayout(device_, setLayout_, nullptr); setLayout_ = VK_NULL_HANDLE; }
+    if (renderPass_) { vk_.DestroyRenderPass(device_, renderPass_, nullptr); renderPass_ = VK_NULL_HANDLE; }
+    if (commandPool_) { vk_.DestroyCommandPool(device_, commandPool_, nullptr); commandPool_ = VK_NULL_HANDLE; }
 
     vk_.DestroyDevice(device_, nullptr);
     device_ = VK_NULL_HANDLE;
-    if (surface_) vk_.DestroySurfaceKHR(instance_, surface_, nullptr);
-    if (instance_) vk_.DestroyInstance(instance_, nullptr);
-    if (vk_.dll) FreeLibrary(vk_.dll);
+    if (surface_) { vk_.DestroySurfaceKHR(instance_, surface_, nullptr); surface_ = VK_NULL_HANDLE; }
+    if (instance_) { vk_.DestroyInstance(instance_, nullptr); instance_ = VK_NULL_HANDLE; }
+    if (vk_.dll) { FreeLibrary(vk_.dll); vk_.dll = nullptr; }
 }
 
 Tool* createVulkan() { return new VulkanTool(); }

@@ -219,6 +219,10 @@ Material makeMaterial(float tr, float tg, float tb, float opacity,
 
 class Dx10Tool : public Tool {
 public:
+    // Releases everything when the tool is destroyed, so a failed init cannot
+    // leak the device it had already created.
+    ~Dx10Tool() override { shutdown(); }
+
     bool init(HWND host) override;
     void resize(int width, int height) override;
     void render(double elapsed) override;
@@ -910,34 +914,36 @@ void Dx10Tool::render(double elapsed) {
 
 void Dx10Tool::shutdown() {
     releaseSizeDependent();
-    if (shadowSrv_) shadowSrv_->Release();
-    if (shadowDsv_) shadowDsv_->Release();
-    if (shadowTex_) shadowTex_->Release();
-    if (shadowSampler_) shadowSampler_->Release();
-    if (blendAdditive_) blendAdditive_->Release();
-    if (blendAlpha_) blendAlpha_->Release();
-    if (blendOpaque_) blendOpaque_->Release();
-    if (depthNoWrite_) depthNoWrite_->Release();
-    if (depthWrite_) depthWrite_->Release();
-    if (rasterShadowSheet_) rasterShadowSheet_->Release();
-    if (rasterShadow_) rasterShadow_->Release();
-    if (rasterCullNone_) rasterCullNone_->Release();
-    if (rasterCullBack_) rasterCullBack_->Release();
-    if (clampSampler_) clampSampler_->Release();
+    // Each release also clears the pointer, so shutdown() is safe to call twice.
+    if (shadowSrv_) { shadowSrv_->Release(); shadowSrv_ = nullptr; }
+    if (shadowDsv_) { shadowDsv_->Release(); shadowDsv_ = nullptr; }
+    if (shadowTex_) { shadowTex_->Release(); shadowTex_ = nullptr; }
+    if (shadowSampler_) { shadowSampler_->Release(); shadowSampler_ = nullptr; }
+    if (blendAdditive_) { blendAdditive_->Release(); blendAdditive_ = nullptr; }
+    if (blendAlpha_) { blendAlpha_->Release(); blendAlpha_ = nullptr; }
+    if (blendOpaque_) { blendOpaque_->Release(); blendOpaque_ = nullptr; }
+    if (depthNoWrite_) { depthNoWrite_->Release(); depthNoWrite_ = nullptr; }
+    if (depthWrite_) { depthWrite_->Release(); depthWrite_ = nullptr; }
+    if (rasterShadowSheet_) { rasterShadowSheet_->Release(); rasterShadowSheet_ = nullptr; }
+    if (rasterShadow_) { rasterShadow_->Release(); rasterShadow_ = nullptr; }
+    if (rasterCullNone_) { rasterCullNone_->Release(); rasterCullNone_ = nullptr; }
+    if (rasterCullBack_) { rasterCullBack_->Release(); rasterCullBack_ = nullptr; }
+    if (clampSampler_) { clampSampler_->Release(); clampSampler_ = nullptr; }
     for (ID3D10ShaderResourceView** srv : {&starSprite_, &panelTexture_, &frameTexture_}) {
         if (*srv) { (*srv)->Release(); *srv = nullptr; }
     }
     GpuMesh* meshes[4] = {&frame_, &panel_, &shuttle_, &stars_};
     for (GpuMesh* m : meshes) {
-        if (m->ib) m->ib->Release();
-        if (m->vb) m->vb->Release();
+        if (m->ib) { m->ib->Release(); m->ib = nullptr; }
+        if (m->vb) { m->vb->Release(); m->vb = nullptr; }
+        m->indexCount = 0;
     }
-    if (constantBuffer_) constantBuffer_->Release();
-    if (inputLayout_) inputLayout_->Release();
-    if (ps_) ps_->Release();
-    if (vs_) vs_->Release();
-    if (swapChain_) swapChain_->Release();
-    if (device_) device_->Release();
+    if (constantBuffer_) { constantBuffer_->Release(); constantBuffer_ = nullptr; }
+    if (inputLayout_) { inputLayout_->Release(); inputLayout_ = nullptr; }
+    if (ps_) { ps_->Release(); ps_ = nullptr; }
+    if (vs_) { vs_->Release(); vs_ = nullptr; }
+    if (swapChain_) { swapChain_->Release(); swapChain_ = nullptr; }
+    if (device_) { device_->Release(); device_ = nullptr; }
 }
 
 Tool* createDx10() { return new Dx10Tool(); }
